@@ -16,6 +16,7 @@ Public interface:
 
 import json
 import os
+import requests
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from collections import defaultdict
