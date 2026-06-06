@@ -1,9 +1,9 @@
-name: Congressional Trade Monitor
+name: Congressional Trade Monitor — Weekly Summary
 
 on:
   schedule:
-    # Runs daily at 6:00 AM PST (14:00 UTC)
-    - cron: "0 14 * * *"
+    # Runs Sunday at 9:00 PM PST (Monday 05:00 UTC)
+    - cron: "0 5 * * 1"
   workflow_dispatch:
     # Allows manual trigger from GitHub Actions tab
 
@@ -11,7 +11,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  monitor:
+  summary:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -27,11 +27,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run monitor
+      - name: Send weekly summary
         env:
           ALERT_EMAIL_SENDER:     ${{ secrets.ALERT_EMAIL_SENDER }}
           ALERT_EMAIL_PASSWORD:   ${{ secrets.ALERT_EMAIL_PASSWORD }}
           ALERT_EMAIL_RECIPIENTS: ${{ secrets.ALERT_EMAIL_RECIPIENTS }}
           GIST_ID:                ${{ secrets.GIST_ID }}
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
-        run: python monitor.py --once
+        run: python monitor.py --summary
