@@ -49,18 +49,35 @@ python monitor.py
 
 ```
 congressional-trade-monitor/
-├── config.py            # Watchlist, alert thresholds, email settings (safe to commit)
-├── fetcher.py           # House + Senate data fetchers
-├── analyzer.py          # Cluster detection + win-rate leaderboard
-├── notifier.py          # Email alert formatting and sending
-├── monitor.py           # Main polling loop
-├── .env                 # Your credentials — gitignored, never committed
-├── .env.example         # Credential template — committed, no real values
-├── .gitignore           # Blocks .env and seen_trades.json from git
-├── requirements.txt     # pip install -r requirements.txt
-├── seen_trades.json     # Auto-created state file — gitignored
+├── config.py                        # Watchlist, alert thresholds, email settings (safe to commit)
+├── fetcher.py                       # House + Senate data fetchers
+├── analyzer.py                      # Cluster detection + win-rate leaderboard
+├── notifier.py                      # Email alert formatting and sending
+├── monitor.py                       # Main polling loop
+├── .env                             # Your credentials — gitignored, never committed
+├── .env.example                     # Credential template — committed, no real values
+├── .gitignore                       # Blocks .env and seen_trades.json from git
+├── requirements.txt                 # pip install -r requirements.txt
+├── seen_trades.json                 # Auto-created state file — gitignored
+├── .github/workflows/monitor.yml   # Daily 6 AM PST alert run (GitHub Actions)
+├── .github/workflows/summary.yml   # Weekly Sunday 9 PM PST digest (GitHub Actions)
 └── README.md
 ```
+
+---
+
+## Automated Scheduling (GitHub Actions)
+
+The monitor runs automatically on GitHub's servers — no computer needs to be on.
+
+| Workflow | Schedule | What it does |
+|----------|----------|--------------|
+| `monitor.yml` | Daily at 6:00 AM PST | Fetches both chambers, detects signals, emails alerts for new trades |
+| `summary.yml` | Sundays at 9:00 PM PST | Sends a weekly digest of all alerts and trade activity |
+
+**State persistence:** `seen_trades.json` is stored in a private GitHub Gist between runs so duplicate alerts are never sent. Each run loads the Gist at start and saves back on completion.
+
+**Manual trigger:** Both workflows have a `workflow_dispatch` trigger — you can run either one on demand from the GitHub Actions tab at any time.
 
 ---
 
