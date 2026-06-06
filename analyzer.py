@@ -288,10 +288,38 @@ def detect_watchlist_alerts(trades: list[dict]) -> list[Alert]:
     return alerts
 
 
-# ── Seen-trades deduplication ─────────────────────────────────────────────────
+# ── Seen-trades deduplication (Gist-backed for GitHub Actions) ───────────────
+
+def _gist_enabled() -> bool:
+    """True if GIST_TOKEN and GIST_ID are set in environment."""
+    return bool(os.getenv("GIST_TOKEN") and os.getenv("GIST_ID"))
+
 
 def _load_seen() -> set[str]:
-    """Load already-alerted trade keys from state file."""
+    """
+    Load already-alerted trade keys.
+    Reads from GitHub Gist if credentials available, otherwise local file.
+    """
+    if _gist_enabled():
+        try:
+            gist_id = os.getenv("GIST_ID")
+            token   = os.getenv("GIST_TOKEN")
+            resp = requests.get(
+                f"https://api.github.com/gists/{gist_id}",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            content = resp.json()["files"]["seen_trades.json"]["content"]
+            return set(json.loads(content))
+        except Exception as e:
+            print(f"  ⚠ Could not load Gist state: {e} — starting fresh")
+            return set()
+
+    # Local file fallback
     if not os.path.exists(config.SEEN_TRADES_FILE):
         return set()
     try:
@@ -302,7 +330,29 @@ def _load_seen() -> set[str]:
 
 
 def _save_seen(seen: set[str]) -> None:
-    """Persist seen trade keys to state file."""
+    """
+    Persist seen trade keys.
+    Writes to GitHub Gist if credentials available, otherwise local file.
+    """
+    if _gist_enabled():
+        try:
+            gist_id = os.getenv("GIST_ID")
+            token   = os.getenv("GIST_TOKEN")
+            requests.patch(
+                f"https://api.github.com/gists/{gist_id}",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+                json={"files": {"seen_trades.json": {"content": json.dumps(sorted(seen), indent=2)}}},
+                timeout=15,
+            )
+            print("  ✓ State saved to Gist")
+        except Exception as e:
+            print(f"  ⚠ Could not save Gist state: {e}")
+        return
+
+    # Local file fallback
     with open(config.SEEN_TRADES_FILE, "w") as f:
         json.dump(sorted(seen), f, indent=2)
 
