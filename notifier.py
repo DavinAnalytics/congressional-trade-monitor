@@ -232,13 +232,27 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
     return subject, text, html
 
 
-def _format_watchlist(alert: Alert) -> tuple[str, str, str]:
-    """Format a 🟢 Watchlist Alert."""
+def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
+    """Format a 🟢 Watchlist Alert with win-rate context."""
     trade   = alert.trades[0]
     member  = trade["representative"]
     tx_type = trade["type"].replace("_", " ").title()
     owners  = sorted({t.get("owner", "") for t in alert.trades if t.get("owner")})
     owner_str = f" ({', '.join(owners)})" if owners else ""
+
+    # Win-rate context
+    stats = win_rates.get(member, {})
+    total = stats.get("total", 0)
+    if total >= config.WIN_RATE_MIN_TRADES:
+        wr       = stats.get("win_rate", 0)
+        wins     = stats.get("wins", 0)
+        wr_str   = f"{wr:.0%} win rate ({wins}/{total} trades beat SPY over {config.WIN_RATE_PRIMARY}d)"
+        wr_badge = f"{wr:.0%} win rate"
+        wr_color = "#16a34a" if wr >= config.WIN_RATE_MIN else "#6b7280"
+    else:
+        wr_str   = f"Insufficient data ({total} scored trades — need {config.WIN_RATE_MIN_TRADES} minimum)"
+        wr_badge = "Win rate: insufficient data"
+        wr_color = "#9ca3af"
 
     subject = (
         f"🟢 WATCHLIST — {member} · "
@@ -248,18 +262,19 @@ def _format_watchlist(alert: Alert) -> tuple[str, str, str]:
     text = (
         f"WATCHLIST ALERT\n"
         f"{'='*50}\n"
-        f"Member:  {member}{owner_str}\n"
-        f"Ticker:  {trade['ticker']}\n"
-        f"Type:    {tx_type}\n"
-        f"Date:    {trade['transaction_date']}\n"
-        f"Amount:  {trade['amount']}\n\n"
-        f"Filing:  {trade['ptr_link']}"
+        f"Member:    {member}{owner_str}\n"
+        f"Ticker:    {trade['ticker']}\n"
+        f"Type:      {tx_type}\n"
+        f"Date:      {trade['transaction_date']}\n"
+        f"Amount:    {trade['amount']}\n"
+        f"Win Rate:  {wr_str}\n\n"
+        f"Filing:    {trade['ptr_link']}"
     )
 
     table_rows = _trade_rows_html(alert.trades)
     body = f"""
       <p style="font-size:15px;color:#111;margin:0 0 16px;">
-        <strong>{member}</strong> (watchlist) filed a new trade.
+        <strong>{member}</strong> (manually tracked) filed a new trade.
       </p>
       <table style="width:100%;border-collapse:collapse;font-size:14px;">
         <thead>
@@ -273,7 +288,17 @@ def _format_watchlist(alert: Alert) -> tuple[str, str, str]:
           </tr>
         </thead>
         <tbody>{table_rows}</tbody>
-      </table>"""
+      </table>
+      <div style="margin:16px 0 0;padding:14px 16px;background:#f9fafb;border-radius:6px;
+                  border-left:3px solid {wr_color};">
+        <p style="margin:0;font-size:13px;color:#374151;">
+          <strong>Historical win rate:</strong> {wr_str}
+        </p>
+        <p style="margin:6px 0 0;font-size:12px;color:#6b7280;">
+          This member is on your manual watchlist. Win rate measures how often their
+          purchases beat SPY over {config.WIN_RATE_PRIMARY} days.
+        </p>
+      </div>"""
 
     html = _base_html(
         title  = f"🟢 Watchlist — {member}",
@@ -302,7 +327,7 @@ def send_alerts(alerts: list[Alert], win_rates: dict | None = None) -> None:
         elif alert.tier == "winrate":
             subject, text, html = _format_winrate(alert, win_rates)
         elif alert.tier == "watchlist":
-            subject, text, html = _format_watchlist(alert)
+            subject, text, html = _format_watchlist(alert, win_rates)
         else:
             continue
 
@@ -399,7 +424,7 @@ def main():
         message = "🟢 WATCHLIST: Sheldon Whitehouse — NVDA SALE_PARTIAL on 2026-05-08 ($100,001 - $250,000) [Self]",
     )
 
-    send_alerts([test_alert])
+    send_alerts([test_alert], win_rates={})
     print("\n✓ Check your inbox. If nothing arrived, check EMAIL_SENDER/EMAIL_PASSWORD in config.py")
     print("  Gmail requires an App Password — not your regular login password.")
     print("  Enable at: myaccount.google.com/apppasswords\n")

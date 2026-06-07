@@ -2,7 +2,7 @@
 **Author:** Davin Kim  
 **Status:** ✅ Complete - all modules built and tested  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv  
-**Purpose:** Personal-use automation tool that monitors congressional stock disclosures, detects high-signal trading patterns, and sends email alerts. GitHub and LinkedIn portfolio project.
+**Purpose:** Personal-use automation tool that monitors congressional stock disclosures, detects high-signal trading patterns, and sends email alerts on schedule.
 
 ---
 
@@ -149,7 +149,7 @@ Uses yfinance to pull stock price on `transaction_date`, compares 30/60/90-day f
 
 **Build all three alert tiers in one pass** rather than shipping cluster-only first. Adding win-rate later would require refactoring the alert schema that notifier and monitor are already built against.
 
-**PDF parsing over Selenium** for the House. The Clerk search is server-rendered HTML accessible via a plain POST — no headless browser needed.
+**PDF parsing over Selenium** for the House. The Clerk search is server-rendered HTML accessible via a plain POST. No headless browser needed.
 
 **Senate HTML over PDF** for the Senate. The eFD viewer renders transactions directly in an HTML table, making PDF download unnecessary and parsing cleaner.
 

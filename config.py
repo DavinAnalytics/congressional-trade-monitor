@@ -29,7 +29,7 @@ SMTP_PORT = 587
 
 # 🔴 Cluster Alert
 CLUSTER_MIN_MEMBERS = 3    # members needed to trigger
-CLUSTER_DAYS        = 14   # rolling window in days
+CLUSTER_DAYS        = 30   # rolling window in days
 
 # 🟡 Win-Rate Alert
 WIN_RATE_MIN        = 0.60  # 60% minimum win rate
