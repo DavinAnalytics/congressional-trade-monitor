@@ -1,6 +1,6 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
-**Status:** ✅ Complete — all modules built and tested  
+**Status:** ✅ Complete - all modules built and tested  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures, detects high-signal trading patterns, and sends email alerts. GitHub and LinkedIn portfolio project.
 
@@ -10,7 +10,7 @@
 
 Congress members are required by the STOCK Act (2012) to publicly disclose stock trades within 45 days. This tool automates monitoring of those disclosures across both chambers, detects meaningful patterns, and alerts via email when a signal fires.
 
-**Core insight driving the design:** The top-performer leaderboard is non-sticky year to year — chasing one politician (e.g. Pelosi) is the wrong play. Broad monitoring with cluster detection is smarter.
+**Core insight driving the design:** The top-performer leaderboard is non-sticky year to year; none of the top performers of 2024 showed up in top performers of 2025. Instead of chasing one politician (e.g. Pelosi), broad monitoring with cluster detection is the smarter decision.
 
 ---
 
@@ -55,12 +55,13 @@ congressional-trade-monitor/
 ├── notifier.py                      # Email alert formatting and sending
 ├── monitor.py                       # Main polling loop
 ├── .env                             # Your credentials — gitignored, never committed
-├── .env.example                     # Credential template — committed, no real values
 ├── .gitignore                       # Blocks .env and seen_trades.json from git
 ├── requirements.txt                 # pip install -r requirements.txt
 ├── seen_trades.json                 # Auto-created state file — gitignored
-├── .github/workflows/monitor.yml   # Daily 6 AM PST alert run (GitHub Actions)
-├── .github/workflows/summary.yml   # Weekly Sunday 9 PM PST digest (GitHub Actions)
+├── .github/
+│   └── workflows/
+│       ├── monitor.yml  # Daily 6 AM PST — fetch, analyze, email alerts
+│       └── summary.yml  # Sundays 9 PM PST — weekly digest email
 └── README.md
 ```
 
@@ -68,7 +69,7 @@ congressional-trade-monitor/
 
 ## Automated Scheduling (GitHub Actions)
 
-The monitor runs automatically on GitHub's servers — no computer needs to be on.
+The monitor runs automatically on GitHub's servers, allowing it to run without the local computer.
 
 | Workflow | Schedule | What it does |
 |----------|----------|--------------|
@@ -77,7 +78,7 @@ The monitor runs automatically on GitHub's servers — no computer needs to be o
 
 **State persistence:** `seen_trades.json` is stored in a private GitHub Gist between runs so duplicate alerts are never sent. Each run loads the Gist at start and saves back on completion.
 
-**Manual trigger:** Both workflows have a `workflow_dispatch` trigger — you can run either one on demand from the GitHub Actions tab at any time.
+**Manual trigger:** Both workflows have a `workflow_dispatch` trigger. You can run either one on demand from the GitHub Actions tab at any time to test.
 
 ---
 
@@ -140,7 +141,7 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
 Uses yfinance to pull stock price on `transaction_date`, compares 30/60/90-day forward returns vs. SPY benchmark. A trade is a win if the member outperformed SPY. Minimum 10 scored trades required before a member qualifies for win-rate alerts.
 
 ### State management
-`seen_trades.json` tracks every trade that has already triggered an alert using a `representative|ticker|date|type` key. On each poll, only truly new trades fire alerts — no duplicate emails.
+`seen_trades.json` tracks every trade that has already triggered an alert using a `representative|ticker|date|type` key. On each poll, only truly new trades fire alerts without duplicate emails.
 
 ---
 
@@ -190,7 +191,7 @@ WATCHLIST           = [...]    # members to always track
 
 ## Email Setup (Gmail)
 
-Credentials are stored in `.env` — never in source code.
+Credentials are stored in `.env`, NOT in source code.
 
 1. Create a dedicated Gmail account for sending alerts
 2. Enable 2FA on that account
@@ -216,4 +217,4 @@ S&P 500 Streamlit dashboard using yfinance — doubles as freelance client demo.
 
 ## AI-Assisted Development Note
 
-Built with Claude (Anthropic) as a pair-programming session. All architectural decisions, source evaluation, and executive calls made by Davin Kim. Key decisions documented throughout this README.
+Built with AI pair-programming assistance. All architectural decisions, source evaluation, and executive calls made by Davin Kim. Key decisions documented throughout this README.
