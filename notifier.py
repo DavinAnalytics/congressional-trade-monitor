@@ -172,18 +172,33 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
 
 
 def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
-    """Format a 🟡 Win-Rate Alert."""
-    trade  = alert.trades[0]
-    member = trade["representative"]
-    stats  = win_rates.get(member, {})
-    wr     = stats.get("win_rate", 0)
-    wins   = stats.get("wins", 0)
-    total  = stats.get("total", 0)
+    """Format a 🟡 Win-Rate Alert with committee conflict context."""
+    from committees import flag_conflicts, get_member_committees
+
+    trade   = alert.trades[0]
+    member  = trade["representative"]
+    ticker  = trade["ticker"]
+    stats   = win_rates.get(member, {})
+    wr      = stats.get("win_rate", 0)
+    wins    = stats.get("wins", 0)
+    total   = stats.get("total", 0)
     tx_type = trade["type"].replace("_", " ").title()
+
+    # Committee conflict context
+    conflicts   = flag_conflicts(member, ticker)
+    member_data = get_member_committees(member)
+
+    # Plain text conflict lines
+    if conflicts:
+        conflict_text = "\nCommittee Conflicts:\n" + "\n".join(f"  ⚠ {c}" for c in conflicts)
+    elif member_data:
+        conflict_text = f"\nCommittee Conflicts: None flagged for {ticker}"
+    else:
+        conflict_text = "\nCommittee Conflicts: No committee data available"
 
     subject = (
         f"🟡 HIGH WIN-RATE — {member} · "
-        f"{trade['ticker']} {tx_type.upper()}"
+        f"{ticker} {tx_type.upper()}"
     )
 
     text = (
@@ -192,9 +207,44 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         f"Member:    {member}\n"
         f"Win Rate:  {wr:.0%} ({wins}/{total} trades beat SPY "
         f"over {config.WIN_RATE_PRIMARY} days)\n\n"
-        f"New Trade:\n{_trade_rows_text([trade])}\n\n"
+        f"New Trade:\n{_trade_rows_text([trade])}"
+        f"{conflict_text}\n\n"
         f"Filing: {trade['ptr_link']}"
     )
+
+    # HTML conflict block
+    if conflicts:
+        conflict_items = "".join(
+            f'<li style="margin:4px 0;font-size:13px;color:#374151;">⚠ {c}</li>'
+            for c in conflicts
+        )
+        conflict_html = f"""
+      <div style="margin:12px 0 0;padding:14px 16px;background:#fff7ed;border-radius:6px;
+                  border-left:3px solid #ea580c;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#9a3412;">
+          ⚠ Potential Committee Conflicts
+        </p>
+        <ul style="margin:0;padding:0 0 0 16px;">{conflict_items}</ul>
+        <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">
+          These committees have oversight authority relevant to {ticker}'s sector.
+        </p>
+      </div>"""
+    elif member_data:
+        conflict_html = f"""
+      <div style="margin:12px 0 0;padding:12px 16px;background:#f0fdf4;border-radius:6px;
+                  border-left:3px solid #86efac;">
+        <p style="margin:0;font-size:13px;color:#166534;">
+          ✓ No committee conflicts flagged for {ticker}
+        </p>
+      </div>"""
+    else:
+        conflict_html = f"""
+      <div style="margin:12px 0 0;padding:12px 16px;background:#f9fafb;border-radius:6px;
+                  border-left:3px solid #d1d5db;">
+        <p style="margin:0;font-size:13px;color:#6b7280;">
+          Committee data unavailable for this member
+        </p>
+      </div>"""
 
     table_rows = _trade_rows_html([trade])
     body = f"""
@@ -216,13 +266,15 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         </thead>
         <tbody>{table_rows}</tbody>
       </table>
-      <div style="margin:20px 0 0;padding:16px;background:#fefce8;border-radius:6px;border-left:4px solid #eab308;">
+      <div style="margin:16px 0 0;padding:14px 16px;background:#fefce8;border-radius:6px;
+                  border-left:4px solid #eab308;">
         <p style="margin:0;font-size:13px;color:#713f12;">
           Win rate threshold: {config.WIN_RATE_MIN:.0%} ·
           Min scored trades: {config.WIN_RATE_MIN_TRADES} ·
           Benchmark window: {config.WIN_RATE_PRIMARY}d vs SPY
         </p>
-      </div>"""
+      </div>
+      {conflict_html}"""
 
     html = _base_html(
         title  = f"🟡 High Win-Rate — {member}",
@@ -233,9 +285,12 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
 
 
 def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
-    """Format a 🟢 Watchlist Alert with win-rate context."""
+    """Format a 🟢 Watchlist Alert with win-rate and committee conflict context."""
+    from committees import flag_conflicts, get_member_committees
+
     trade   = alert.trades[0]
     member  = trade["representative"]
+    ticker  = trade["ticker"]
     tx_type = trade["type"].replace("_", " ").title()
     owners  = sorted({t.get("owner", "") for t in alert.trades if t.get("owner")})
     owner_str = f" ({', '.join(owners)})" if owners else ""
@@ -247,29 +302,76 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         wr       = stats.get("win_rate", 0)
         wins     = stats.get("wins", 0)
         wr_str   = f"{wr:.0%} win rate ({wins}/{total} trades beat SPY over {config.WIN_RATE_PRIMARY}d)"
-        wr_badge = f"{wr:.0%} win rate"
         wr_color = "#16a34a" if wr >= config.WIN_RATE_MIN else "#6b7280"
     else:
         wr_str   = f"Insufficient data ({total} scored trades — need {config.WIN_RATE_MIN_TRADES} minimum)"
-        wr_badge = "Win rate: insufficient data"
         wr_color = "#9ca3af"
+
+    # Committee conflict context
+    conflicts   = flag_conflicts(member, ticker)
+    member_data = get_member_committees(member)
+    chamber     = member_data.get("chamber", "")
 
     subject = (
         f"🟢 WATCHLIST — {member} · "
-        f"{trade['ticker']} {tx_type.upper()}"
+        f"{ticker} {tx_type.upper()}"
     )
+
+    # Plain text conflict lines
+    conflict_text = ""
+    if conflicts:
+        conflict_text = "\nCommittee Conflicts:\n" + "\n".join(f"  ⚠ {c}" for c in conflicts)
+    elif member_data:
+        conflict_text = "\nCommittee Conflicts: None flagged for this ticker"
+    else:
+        conflict_text = "\nCommittee Conflicts: No committee data available"
 
     text = (
         f"WATCHLIST ALERT\n"
         f"{'='*50}\n"
         f"Member:    {member}{owner_str}\n"
-        f"Ticker:    {trade['ticker']}\n"
+        f"Ticker:    {ticker}\n"
         f"Type:      {tx_type}\n"
         f"Date:      {trade['transaction_date']}\n"
         f"Amount:    {trade['amount']}\n"
-        f"Win Rate:  {wr_str}\n\n"
+        f"Win Rate:  {wr_str}"
+        f"{conflict_text}\n\n"
         f"Filing:    {trade['ptr_link']}"
     )
+
+    # HTML conflict block
+    if conflicts:
+        conflict_items = "".join(
+            f'<li style="margin:4px 0;font-size:13px;color:#374151;">⚠ {c}</li>'
+            for c in conflicts
+        )
+        conflict_html = f"""
+      <div style="margin:12px 0 0;padding:14px 16px;background:#fff7ed;border-radius:6px;
+                  border-left:3px solid #ea580c;">
+        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#9a3412;">
+          ⚠ Potential Committee Conflicts
+        </p>
+        <ul style="margin:0;padding:0 0 0 16px;">{conflict_items}</ul>
+        <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">
+          These committees have oversight authority relevant to {ticker}'s sector.
+        </p>
+      </div>"""
+    elif member_data:
+        conflict_html = f"""
+      <div style="margin:12px 0 0;padding:12px 16px;background:#f0fdf4;border-radius:6px;
+                  border-left:3px solid #86efac;">
+        <p style="margin:0;font-size:13px;color:#166534;">
+          ✓ No committee conflicts flagged for {ticker}
+        </p>
+      </div>"""
+    else:
+        conflict_html = f"""
+      <div style="margin:12px 0 0;padding:12px 16px;background:#f9fafb;border-radius:6px;
+                  border-left:3px solid #d1d5db;">
+        <p style="margin:0;font-size:13px;color:#6b7280;">
+          Committee data unavailable for this member
+        </p>
+      </div>"""
 
     table_rows = _trade_rows_html(alert.trades)
     body = f"""
@@ -295,10 +397,10 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
           <strong>Historical win rate:</strong> {wr_str}
         </p>
         <p style="margin:6px 0 0;font-size:12px;color:#6b7280;">
-          This member is on your manual watchlist. Win rate measures how often their
-          purchases beat SPY over {config.WIN_RATE_PRIMARY} days.
+          Win rate measures how often purchases beat SPY over {config.WIN_RATE_PRIMARY} days.
         </p>
-      </div>"""
+      </div>
+      {conflict_html}"""
 
     html = _base_html(
         title  = f"🟢 Watchlist — {member}",

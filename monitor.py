@@ -17,9 +17,10 @@ import argparse
 from datetime import datetime, timedelta
 
 import config
-from fetcher  import fetch_all
-from analyzer import analyze, compute_win_rates, filter_new_trades
-from notifier import send_alerts, send_summary
+from fetcher     import fetch_all
+from analyzer    import analyze, compute_win_rates, filter_new_trades
+from notifier    import send_alerts, send_summary
+from committees  import load_all as load_committees
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -49,6 +50,10 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
         (alerts, trades, win_rates)
     """
     _banner(f"Poll started — {_now()}")
+
+    # Load committee assignments (cached after first call)
+    print("\nLoading committee assignments...")
+    load_committees()
 
     # Fetch — use wider window on first run or when wide=True
     fetch_days = 180 if wide else config.FETCH_DAYS

@@ -49,15 +49,17 @@ python monitor.py
 
 ```
 congressional-trade-monitor/
-├── config.py                        # Watchlist, alert thresholds, email settings (safe to commit)
-├── fetcher.py                       # House + Senate data fetchers
-├── analyzer.py                      # Cluster detection + win-rate leaderboard
-├── notifier.py                      # Email alert formatting and sending
-├── monitor.py                       # Main polling loop
-├── .env                             # Your credentials — gitignored, never committed
-├── .gitignore                       # Blocks .env and seen_trades.json from git
-├── requirements.txt                 # pip install -r requirements.txt
-├── seen_trades.json                 # Auto-created state file — gitignored
+├── config.py            # Watchlist, alert thresholds, email settings (safe to commit)
+├── fetcher.py           # House + Senate data fetchers
+├── analyzer.py          # Cluster detection + win-rate leaderboard
+├── committees.py        # Committee assignments + conflict detection (official gov sources)
+├── notifier.py          # Email alert formatting and sending
+├── monitor.py           # Main polling loop
+├── .env                 # Your credentials — gitignored, never committed
+├── .env.example         # Credential template — committed, no real values
+├── .gitignore           # Blocks .env and seen_trades.json from git
+├── requirements.txt     # pip install -r requirements.txt
+├── seen_trades.json     # Auto-created state file — gitignored
 ├── .github/
 │   └── workflows/
 │       ├── monitor.yml  # Daily 6 AM PST — fetch, analyze, email alerts
@@ -90,6 +92,8 @@ All data comes directly from official U.S. government sources. No third-party AP
 |---------|--------|--------|
 | Senate | `efdsearch.senate.gov` | Session POST (CSRF + terms agreement) → HTML table parsing |
 | House | `disclosures-clerk.house.gov` | POST filing index → pdfplumber PDF parsing |
+| Committee Assignments | `clerk.house.gov/xml/lists/MemberData.xml` | XML parsing — House members + committee codes |
+| Committee Assignments | `senate.gov/general/committee_assignments/assignments.htm` | HTML parsing — Senate members + committees |
 
 ### Why not the popular free APIs?
 
@@ -118,6 +122,11 @@ The Senate eFD viewer pages render transaction data as a clean HTML table. No PD
 
 ### House: PDF parsing
 House PTR filings are only available as PDFs. The Clerk search endpoint returns server-rendered HTML (confirmed — not a React SPA), so a plain POST gives us the full filing index. Each PDF is parsed with pdfplumber using regex to extract ticker, type, date, and amount.
+
+### Committee conflict detection
+`committees.py` fetches committee assignments for all 535 members from official government XML and HTML sources. On every watchlist alert, the member's committees and subcommittees are cross-referenced against sector-to-committee mappings in `config.py`. If a member sits on a committee with oversight authority over the traded ticker's sector, the conflict is flagged in the email.
+
+**Example:** Whitehouse sells NVDA → flagged for sitting on Commerce/Science/Transportation, International Trade subcommittee (chip export policy), and Emerging Threats and Capabilities.
 
 ### Unified output schema
 Both chambers normalize to the same dict so all downstream modules are chamber-agnostic:
@@ -153,6 +162,8 @@ Uses yfinance to pull stock price on `transaction_date`, compares 30/60/90-day f
 
 **Senate HTML over PDF** for the Senate. The eFD viewer renders transactions directly in an HTML table, making PDF download unnecessary and parsing cleaner.
 
+**Official government sources for committee data** rather than third-party APIs. Both the House Clerk XML and Senate.gov HTML are free, permanent, and require no authentication.
+
 **Rate limiting by design**: polls every 4 hours (6 requests/day per source), 200 PDF cap per run, `seen_trades.json` prevents re-downloading already-processed filings.
 
 ---
@@ -170,6 +181,9 @@ Win-Rate Leaderboard:
 
 Alert fired:
   🟢 Whitehouse — NVDA SALE_PARTIAL $100,001-$250,000 [Self, Spouse]
+     ⚠ Commerce, Science, and Transportation (oversees Semiconductors — NVDA)
+     ⚠ International Trade, Customs, and Global Competitiveness (oversees Semiconductors — NVDA)
+     ⚠ Emerging Threats and Capabilities (oversees Semiconductors — NVDA)
 ```
 
 ---
@@ -178,13 +192,15 @@ Alert fired:
 
 ```python
 CLUSTER_MIN_MEMBERS = 3        # members needed for cluster alert
-CLUSTER_DAYS        = 14       # rolling window
+CLUSTER_DAYS        = 30       # rolling window
 WIN_RATE_MIN        = 0.60     # 60% win rate threshold
 WIN_RATE_MIN_TRADES = 10       # minimum scored trades
 WIN_RATE_PRIMARY    = 60       # days forward vs SPY
 POLL_INTERVAL_SECONDS = 14400  # 4 hours
 FETCH_DAYS          = 30       # alert window
 WATCHLIST           = [...]    # members to always track
+SECTOR_TICKERS      = {...}    # sector → ticker mappings for conflict detection
+COMMITTEE_SECTORS   = {...}    # committee keywords → sector mappings
 ```
 
 ---
