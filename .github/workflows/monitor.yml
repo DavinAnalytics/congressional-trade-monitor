@@ -2,8 +2,9 @@ name: Congressional Trade Monitor
 
 on:
   schedule:
-    # Runs daily at 6:00 AM PST (14:00 UTC)
-    - cron: "0 14 * * *"
+    # Runs daily at 5:55 AM PST / 6:55 AM PDT (13:55 UTC)
+    # Using an odd minute (:55) to beat the top-of-the-hour GitHub traffic jam
+    - cron: "55 13 * * *"
   workflow_dispatch:
     # Allows manual trigger from GitHub Actions tab
 
@@ -35,11 +36,11 @@ jobs:
           GIST_ID:                ${{ secrets.GIST_ID }}
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
         run: |
-          DAY=$(date -u +%u)
-          if [ "$DAY" = "1" ]; then
-            echo "Monday UTC (Sunday PST) — running weekly summary"
-            python monitor.py --summary
-          else
-            echo "Weekday — running alert monitor"
-            python monitor.py --once
+          DAY_PST=$(TZ="America/Los_Angeles" date +%u) 
+          if [ "$DAY_PST" = "7" ]; then 
+            echo "It is Sunday in California — running weekly summary" 
+            python monitor.py --summary 
+          else 
+            echo "It is Mon-Sat in California — running alert monitor" 
+            python monitor.py --once 
           fi
