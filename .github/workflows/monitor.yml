@@ -27,11 +27,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run monitor
+      - name: Run monitor (summary on Sundays, alerts other days)
         env:
           ALERT_EMAIL_SENDER:     ${{ secrets.ALERT_EMAIL_SENDER }}
           ALERT_EMAIL_PASSWORD:   ${{ secrets.ALERT_EMAIL_PASSWORD }}
           ALERT_EMAIL_RECIPIENTS: ${{ secrets.ALERT_EMAIL_RECIPIENTS }}
           GIST_ID:                ${{ secrets.GIST_ID }}
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
-        run: python monitor.py --once
+        run: |
+          DAY=$(date -u +%u)
+          if [ "$DAY" = "7" ]; then
+            echo "Sunday — running weekly summary"
+            python monitor.py --summary
+          else
+            echo "Weekday — running alert monitor"
+            python monitor.py --once
+          fi

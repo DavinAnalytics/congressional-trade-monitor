@@ -62,8 +62,7 @@ congressional-trade-monitor/
 ├── seen_trades.json     # Auto-created state file — gitignored
 ├── .github/
 │   └── workflows/
-│       ├── monitor.yml  # Daily 6 AM PST — fetch, analyze, email alerts
-│       └── summary.yml  # Sundays 9 PM PST — weekly digest email
+│       └── monitor.yml  # Daily 6 AM PST — alerts Mon-Sat, digest on Sunday
 └── README.md
 ```
 
@@ -73,14 +72,16 @@ congressional-trade-monitor/
 
 The monitor runs automatically on GitHub's servers, allowing it to run without the local computer.
 
-| Workflow | Schedule | What it does |
-|----------|----------|--------------|
-| `monitor.yml` | Daily at 6:00 AM PST | Fetches both chambers, detects signals, emails alerts for new trades |
-| `summary.yml` | Sundays at 9:00 PM PST | Sends a weekly digest of all alerts and trade activity |
+| Day | Schedule | What it does |
+|-----|----------|--------------|
+| Monday – Saturday | 6:00 AM PST | Fetches both chambers, detects signals, emails alerts for new trades |
+| Sunday | 6:00 AM PST | Sends a weekly digest of all alerts and trade activity |
+
+Both are handled by a single `monitor.yml` workflow. The script checks the day of week and runs `--once` or `--summary` accordingly.
 
 **State persistence:** `seen_trades.json` is stored in a private GitHub Gist between runs so duplicate alerts are never sent. Each run loads the Gist at start and saves back on completion.
 
-**Manual trigger:** Both workflows have a `workflow_dispatch` trigger. You can run either one on demand from the GitHub Actions tab at any time to test.
+**Manual trigger:** The workflow has a `workflow_dispatch` trigger. You can run it on demand from the GitHub Actions tab at any time.
 
 ---
 
@@ -222,12 +223,6 @@ Credentials are stored in `.env`, NOT in source code.
 Test with: `python notifier.py`
 
 **Why this approach:** `config.py` is safe to commit publicly. `.env` is gitignored and stays on your machine only. Anyone cloning the repo copies `.env.example` to `.env` and adds their own credentials.
-
----
-
-## Next Project
-
-S&P 500 Streamlit dashboard using yfinance — doubles as freelance client demo. Win-rate calculation in this project builds directly toward that.
 
 ---
 
