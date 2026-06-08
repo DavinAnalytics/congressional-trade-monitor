@@ -36,8 +36,8 @@ jobs:
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
         run: |
           DAY=$(date -u +%u)
-          if [ "$DAY" = "7" ]; then
-            echo "Sunday — running weekly summary"
+          if [ "$DAY" = "1" ]; then
+            echo "Monday UTC (Sunday PST) — running weekly summary"
             python monitor.py --summary
           else
             echo "Weekday — running alert monitor"
