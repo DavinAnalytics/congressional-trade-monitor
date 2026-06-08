@@ -438,19 +438,19 @@ def send_alerts(alerts: list[Alert], win_rates: dict | None = None) -> None:
 
 def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
     """
-    Send a daily digest email summarizing all alerts and trade activity.
-    Optional — call from monitor.py once per day if desired.
+    Send a weekly digest email summarizing all alerts and trade activity.
+    Runs every Sunday at 6 AM PST via GitHub Actions.
     """
     now     = datetime.now().strftime("%B %d, %Y")
     n_alert = len(alerts)
     n_trade = len(trades)
     chambers = {t["chamber"] for t in trades}
 
-    subject = f"📊 Daily Digest — {now} · {n_alert} alert(s), {n_trade} trade(s)"
+    subject = f"📊 Weekly Digest — {now} · {n_alert} alert(s), {n_trade} trade(s)"
 
     # Plain text
     text_lines = [
-        f"CONGRESSIONAL TRADE MONITOR — Daily Digest",
+        f"CONGRESSIONAL TRADE MONITOR — Weekly Digest",
         f"{now}",
         f"{'='*50}",
         f"Trades fetched:  {n_trade} ({', '.join(sorted(chambers))})",
@@ -458,11 +458,11 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
         "",
     ]
     if alerts:
-        text_lines.append("Alerts:")
+        text_lines.append("Alerts this week:")
         for a in alerts:
             text_lines.append(f"  {a.message}")
     else:
-        text_lines.append("No alerts fired today.")
+        text_lines.append("No alerts fired this week.")
     text = "\n".join(text_lines)
 
     # HTML
@@ -476,7 +476,7 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
               {a.message.replace(chr(10), '<br>')}
             </li>"""
     else:
-        alert_items = '<li style="color:#6b7280;font-size:14px;">No alerts today.</li>'
+        alert_items = '<li style="color:#6b7280;font-size:14px;">No alerts this week.</li>'
 
     body = f"""
       <div style="display:flex;gap:24px;margin-bottom:20px;">
@@ -489,11 +489,11 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
           <p style="margin:4px 0 0;font-size:12px;color:#6b7280;text-transform:uppercase;">Alerts</p>
         </div>
       </div>
-      <h2 style="font-size:15px;font-weight:600;color:#111;margin:0 0 12px;">Alerts</h2>
+      <h2 style="font-size:15px;font-weight:600;color:#111;margin:0 0 12px;">Alerts This Week</h2>
       <ul style="list-style:none;margin:0;padding:0;">{alert_items}</ul>"""
 
     html = _base_html(
-        title  = f"Daily Digest — {now}",
+        title  = f"Weekly Digest — {now}",
         accent = "#1e40af",
         body   = body,
     )
