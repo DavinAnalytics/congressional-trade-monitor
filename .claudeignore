@@ -1,0 +1,10 @@
+# Ignore all environment variable files
+.env
+.env.*
+!.env.example
+
+# Ignore other common credential files
+*.pem
+*.key
+.aws/
+.ssh/
