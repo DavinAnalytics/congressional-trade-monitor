@@ -28,8 +28,8 @@ SMTP_PORT = 587
 # ── Alert Thresholds ──────────────────────────────────────────────────────────
 
 # 🔴 Cluster Alert
-CLUSTER_MIN_MEMBERS = 3    # members needed to trigger
-CLUSTER_DAYS        = 30   # rolling window in days
+CLUSTER_MIN_MEMBERS = 2    # members needed to trigger
+CLUSTER_DAYS        = 45   # rolling window in days
 
 # 🟡 Win-Rate Alert
 WIN_RATE_MIN        = 0.60  # 60% minimum win rate
@@ -66,7 +66,6 @@ HOUSE_PDF_LIMIT     = 200
 # Tickers too common to signal anything in cluster detection
 # A cluster of members buying AAPL is probably coincidence, not coordination
 CLUSTER_EXCLUDE_TICKERS = {
-    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "TSLA",
     "BRK.B", "BRK.A", "SPY", "QQQ", "VOO", "VTI", "IVV",
 }
 
