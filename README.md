@@ -1,8 +1,8 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
 **Status:** ✅ Complete - all modules built and tested  
-**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv  
-**Purpose:** Personal-use automation tool that monitors congressional stock disclosures, detects high-signal trading patterns, and sends email alerts on schedule.
+**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair  
+**Purpose:** Personal-use automation tool that monitors congressional stock disclosures, detects high-signal trading patterns, sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
 
 ---
 
@@ -18,9 +18,11 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 
 | Tier | Signal | Trigger |
 |------|--------|---------|
-| 🔴 Cluster Alert | 3+ members buy/sell same ticker within 14 days | Strongest signal |
-| 🟡 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
-| 🟢 Watchlist Alert | Specific named politician files anything | Manual tracking |
+| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest signal |
+| 🏆 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
+| 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
+
+Alert header color in the dashboard and email reflects trade direction: **green** for net buy activity, **red** for net sell activity — independent of tier.
 
 ---
 
@@ -32,6 +34,9 @@ pip install -r requirements.txt
 # Set up credentials
 cp .env.example .env
 # Edit .env with your Gmail sender, app password, and recipient
+
+# Launch the visual dashboard (no credentials required)
+python -m streamlit run dashboard.py
 
 # Test one full cycle (fetch → analyze → alerts)
 python monitor.py --once
@@ -45,6 +50,48 @@ python monitor.py
 
 ---
 
+## Dashboard
+
+`dashboard.py` is a Streamlit app that provides a read-only visual interface over the same data sources the monitor uses. It **never calls `analyzer.analyze()`** — only the individual detectors — so it cannot mutate `seen_trades.json` or trigger duplicate email alerts.
+
+```bash
+python -m streamlit run dashboard.py
+```
+
+> Use `python -m streamlit` (not `streamlit`) to ensure the same Python environment that has all dependencies installed.
+
+### Tabs
+
+| Tab | Contents |
+|-----|----------|
+| 🔔 Alerts | All fired alerts with colored buy/sell header, trades table, win rate, committee assignments, Altair price chart vs SPY, TradingView link |
+| 📋 Trades | Full trade log filterable by sector and type; win rate progress bar; committee column; click any row for member detail modal |
+| 🏆 Leaderboard | Win rate rankings; click any row for member detail modal |
+
+### Activity Summary
+
+Between the metric header and the tabs, a summary panel shows:
+
+- **🔥 Hot Sector / ❄️ Avoid Sector** — derived from net buy vs sell activity across `config.SECTOR_TICKERS`; Avoid Sector only shown when traded tickers span more than one sector
+- **⚖️ Net Activity** — top 5 most net-bought and most net-sold tickers, by trade count and estimated dollar volume; each ticker is a clickable TradingView link
+
+### Sidebar Controls
+
+| Control | Effect |
+|---------|--------|
+| Days window (7–90) | Filters trades in memory — no re-fetch |
+| Sector filter | Filters Trades tab by `config.SECTOR_TICKERS` membership |
+| Trade type | Purchase / Sale / Partial Sale |
+| Refresh Data | Clears all caches and re-fetches from live government sources |
+
+Trade data and win rates are cached for 1 hour. The days slider, sector, and type filters all apply in memory instantly — only "Refresh Data" triggers a live fetch.
+
+### Price Performance Charts
+
+Each alert includes an Altair line chart indexed to 100 at the date of the first trade in the alert window, comparing the stock (blue, `#3a86ff`) vs SPY (red, `#e63946`). Y-axis is zoomed to the actual data range so small divergences are visible.
+
+---
+
 ## File Structure
 
 ```
@@ -55,6 +102,7 @@ congressional-trade-monitor/
 ├── committees.py        # Committee assignments + conflict detection (official gov sources)
 ├── notifier.py          # Email alert formatting and sending
 ├── monitor.py           # Main polling loop
+├── dashboard.py         # Streamlit visual dashboard (read-only, no side effects)
 ├── .env                 # Your credentials — gitignored, never committed
 ├── .env.example         # Credential template — committed, no real values
 ├── .gitignore           # Blocks .env and seen_trades.json from git
@@ -127,6 +175,8 @@ House PTR filings are only available as PDFs. The Clerk search endpoint returns 
 ### Committee conflict detection
 `committees.py` fetches committee assignments for all 535 members from official government XML and HTML sources. On every watchlist alert, the member's committees and subcommittees are cross-referenced against sector-to-committee mappings in `config.py`. If a member sits on a committee with oversight authority over the traded ticker's sector, the conflict is flagged in the email.
 
+**Name format fix:** Trade disclosures return names as `"Last, First Middle"` (e.g. `"Taylor, David J."`) while the committee cache keys names as `"First Last"`. `get_member_committees()` detects the comma-separated format and retries with both `"First Middle Last"` and `"First Last"` (dropping the middle initial), dramatically improving committee coverage.
+
 **Example:** Whitehouse sells NVDA → flagged for sitting on Commerce/Science/Transportation, International Trade subcommittee (chip export policy), and Emerging Threats and Capabilities.
 
 ### Unified output schema
@@ -192,17 +242,26 @@ Alert fired:
 ## Configuration (config.py)
 
 ```python
-CLUSTER_MIN_MEMBERS = 3        # members needed for cluster alert
-CLUSTER_DAYS        = 30       # rolling window
+CLUSTER_MIN_MEMBERS = 2        # members needed for cluster alert (lowered from 3)
+CLUSTER_DAYS        = 45       # rolling window (extended from 30)
 WIN_RATE_MIN        = 0.60     # 60% win rate threshold
 WIN_RATE_MIN_TRADES = 10       # minimum scored trades
 WIN_RATE_PRIMARY    = 60       # days forward vs SPY
 POLL_INTERVAL_SECONDS = 14400  # 4 hours
-FETCH_DAYS          = 30       # alert window
-WATCHLIST           = [...]    # members to always track
+FETCH_DAYS          = 45       # alert window
+WATCHLIST           = [        # members whose any trade triggers an alert
+    "Nancy Pelosi",
+    "Josh Gottheimer",
+    "Dan Crenshaw",
+    "Tommy Tuberville",
+    "Mark Warner",
+    "Brian Mast",
+]
 SECTOR_TICKERS      = {...}    # sector → ticker mappings for conflict detection
 COMMITTEE_SECTORS   = {...}    # committee keywords → sector mappings
 ```
+
+**Watchlist rationale:** Pelosi (Paul's options trades historically correlated with legislation), Gottheimer (semiconductor trades near CHIPS Act votes, Financial Services committee), Crenshaw (defense/energy trades, Armed Services committee), Tuberville (defense/energy trades, Senate Armed Services, single-handedly held up military appointments), Warner (tech/finance background, Senate Intelligence + Finance committees), Mast (active defense sector trades, Armed Services committee).
 
 ---
 

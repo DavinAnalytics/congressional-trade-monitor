@@ -8,6 +8,7 @@ seen_trades.json (the deduplication state used by the real monitoring loop).
 Instead, calls individual detectors directly.
 """
 
+import re
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -166,6 +167,139 @@ def _member_dialog(name: str, days: int):
             st.warning("**Potential conflicts detected:**")
             for conflict in unique_conflicts:
                 st.write(f"⚠ {conflict}")
+
+
+# ── Summary helpers ────────────────────────────────────────────────────────────
+
+def _parse_amount(s: str) -> float:
+    if not s or s.lower().startswith("none"):
+        return 0.0
+    nums = [float(n.replace(",", "")) for n in re.findall(r"[\d,]+", s)]
+    if len(nums) >= 2:
+        return (nums[0] + nums[1]) / 2
+    return nums[0] if nums else 0.0
+
+
+def _fmt_dollars(v: float) -> str:
+    if v >= 1_000_000: return f"${v / 1_000_000:.1f}M"
+    if v >= 1_000:     return f"${v / 1_000:.0f}K"
+    return f"${v:.0f}"
+
+
+def _render_summary(trades: list[dict]):
+    from collections import Counter
+
+    if not trades:
+        return
+
+    buys  = [t for t in trades if t["type"] == "purchase"]
+    sells = [t for t in trades if t["type"] in ("sale", "sale_partial")]
+
+    def _signed_count(v: int) -> str:
+        return f"+{v}" if v > 0 else str(v)
+
+    def _signed_dollars(v: float) -> str:
+        sign = "+" if v > 0 else "-" if v < 0 else ""
+        return f"{sign}{_fmt_dollars(abs(v))}"
+
+    def link_badge(ticker: str, color: str) -> str:
+        url = f"https://www.tradingview.com/chart/?symbol={ticker}"
+        return (
+            f'<a href="{url}" target="_blank" style="text-decoration:none;">'
+            f'<span style="background:#1e293b;color:{color};font-family:monospace;'
+            f'padding:2px 8px;border-radius:4px;font-weight:600;">{ticker}</span>'
+            f'</a>'
+        )
+
+    # ── Compute net counts and dollars ────────────────────────────────────────
+    buy_counts: dict[str, int] = Counter(t["ticker"] for t in buys)
+    sell_counts: dict[str, int] = Counter(t["ticker"] for t in sells)
+    buy_dollars: dict[str, float] = {}
+    sell_dollars: dict[str, float] = {}
+    for t in buys:
+        buy_dollars[t["ticker"]] = buy_dollars.get(t["ticker"], 0) + _parse_amount(t["amount"])
+    for t in sells:
+        sell_dollars[t["ticker"]] = sell_dollars.get(t["ticker"], 0) + _parse_amount(t["amount"])
+
+    all_tickers = set(buy_counts) | set(sell_counts)
+    net_counts  = {tk: buy_counts.get(tk, 0) - sell_counts.get(tk, 0) for tk in all_tickers}
+    net_dollars = {tk: buy_dollars.get(tk, 0) - sell_dollars.get(tk, 0) for tk in all_tickers}
+
+    top_bought_count   = sorted([(tk, v) for tk, v in net_counts.items()  if v > 0 and net_dollars.get(tk, 0) >= 0], key=lambda x: x[1],  reverse=True)[:5]
+    top_bought_dollars = sorted([(tk, v) for tk, v in net_dollars.items() if v > 0 and net_counts.get(tk, 0)  >= 0], key=lambda x: x[1], reverse=True)[:5]
+    top_sold_count     = sorted([(tk, v) for tk, v in net_counts.items()  if v < 0 and net_dollars.get(tk, 0) <= 0], key=lambda x: x[1])[:5]
+    top_sold_dollars   = sorted([(tk, v) for tk, v in net_dollars.items() if v < 0 and net_counts.get(tk, 0)  <= 0], key=lambda x: x[1])[:5]
+
+    # ── Sector heat ───────────────────────────────────────────────────────────
+    sector_net: dict[str, int] = {}
+    for ticker, net in net_counts.items():
+        for sector, tickers in config.SECTOR_TICKERS.items():
+            if ticker.upper() in [t.upper() for t in tickers]:
+                sector_net[sector] = sector_net.get(sector, 0) + net
+                break
+
+    st.subheader("📊 Activity Summary", divider="gray")
+
+    # Sector heat row
+    if sector_net:
+        hot_sector  = max(sector_net, key=lambda s: sector_net[s])
+        cold_sector = min(sector_net, key=lambda s: sector_net[s])
+        h_net = sector_net[hot_sector]
+        c_net = sector_net[cold_sector]
+        sh1, sh2 = st.columns(2)
+        sh1.metric(
+            "🔥 Hot Sector (most net buying)",
+            hot_sector,
+            delta=f"{_signed_count(h_net)} net trades",
+        )
+        if hot_sector != cold_sector:
+            sh2.metric(
+                "❄️ Avoid Sector (most net selling)",
+                cold_sector,
+                delta=f"{_signed_count(c_net)} net trades",
+            )
+
+    st.markdown("#### ⚖️ Net Activity")
+
+    nc1, nc2 = st.columns(2)
+
+    with nc1:
+        st.markdown("**🟢 Most Net Bought**")
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.caption("**By frequency**")
+            for tk, v in top_bought_count:
+                st.markdown(
+                    f'{link_badge(tk, "#16a34a")}: {_signed_count(v)}',
+                    unsafe_allow_html=True,
+                )
+        with sc2:
+            st.caption("**By estimated $**")
+            for tk, v in top_bought_dollars:
+                st.markdown(
+                    f'{link_badge(tk, "#16a34a")}: {_signed_dollars(v)}',
+                    unsafe_allow_html=True,
+                )
+
+    with nc2:
+        st.markdown("**🔴 Most Net Sold**")
+        sc3, sc4 = st.columns(2)
+        with sc3:
+            st.caption("**By frequency**")
+            for tk, v in top_sold_count:
+                st.markdown(
+                    f'{link_badge(tk, "#dc2626")}: {_signed_count(v)}',
+                    unsafe_allow_html=True,
+                )
+        with sc4:
+            st.caption("**By estimated $**")
+            for tk, v in top_sold_dollars:
+                st.markdown(
+                    f'{link_badge(tk, "#dc2626")}: {_signed_dollars(v)}',
+                    unsafe_allow_html=True,
+                )
+
+    st.space("small")
 
 
 # ── Tab renderers ──────────────────────────────────────────────────────────────
@@ -448,6 +582,7 @@ with st.container(horizontal=True):
 
 st.space("small")
 
+_render_summary(trades)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
