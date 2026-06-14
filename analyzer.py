@@ -159,7 +159,7 @@ def compute_win_rates(trades: list[dict]) -> dict[str, dict]:
 def detect_cluster_alerts(trades: list[dict]) -> list[Alert]:
     """
     🔴 Cluster Alert
-    Find tickers where 3+ distinct members traded in the same direction
+    Find tickers where CLUSTER_MIN_MEMBERS+ distinct members traded in the same direction
     within CLUSTER_DAYS days of each other.
     """
     alerts = []
@@ -171,10 +171,12 @@ def detect_cluster_alerts(trades: list[dict]) -> list[Alert]:
         groups[(t["ticker"], direction)].append(t)
 
     for (ticker, direction), group in groups.items():
+        if ticker in config.CLUSTER_EXCLUDE_TICKERS:
+            continue
         if len(group) < config.CLUSTER_MIN_MEMBERS:
             continue
 
-        # Check if any subset of 3+ trades falls within the window
+        # Check if any subset of CLUSTER_MIN_MEMBERS+ trades falls within the window
         group.sort(key=lambda t: t["transaction_date"])
         dates = [
             datetime.strptime(t["transaction_date"], "%Y-%m-%d")

@@ -50,7 +50,7 @@ WATCHLIST = [
 # ── Polling ───────────────────────────────────────────────────────────────────
 
 POLL_INTERVAL_SECONDS = 14_400   # 4 hours
-FETCH_DAYS            = 30       # alert window
+FETCH_DAYS            = 45       # alert window
 
 # ── State File ────────────────────────────────────────────────────────────────
 
