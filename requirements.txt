@@ -3,3 +3,4 @@ beautifulsoup4
 pdfplumber
 yfinance
 python-dotenv
+streamlit
