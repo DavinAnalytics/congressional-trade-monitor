@@ -170,6 +170,20 @@ def _member_dialog(name: str, days: int):
 
 # ── Tab renderers ──────────────────────────────────────────────────────────────
 
+_TIER_DISPLAY = {
+    "cluster":   ("⚡",  "CLUSTER"),
+    "winrate":   ("🏆", "WIN-RATE"),
+    "watchlist": ("👁️", "WATCHLIST"),
+}
+
+
+def _fmt_type(tx_type: str) -> str:
+    if tx_type == "purchase":     return "🟢 Purchase"
+    if tx_type == "sale":         return "🔴 Sale"
+    if tx_type == "sale_partial": return "🔴 Partial Sale"
+    return tx_type.replace("_", " ").title()
+
+
 def _render_alerts(alerts: list, win_rates: dict):
     if not alerts:
         st.info("No alerts in the current window.", icon=":material/check_circle:")
@@ -180,16 +194,21 @@ def _render_alerts(alerts: list, win_rates: dict):
         label = f"{company} ({alert.ticker})" if company != alert.ticker else alert.ticker
 
         with st.container(border=True):
-            if alert.tier == "cluster":
-                st.error(f"**🔴 CLUSTER — {label}**\n\n{alert.message}")
-            elif alert.tier == "winrate":
-                st.warning(f"**🟡 WIN-RATE — {label}**\n\n{alert.message}")
-            else:
-                st.success(f"**🟢 WATCHLIST — {label}**\n\n{alert.message}")
+            emoji, tier_label = _TIER_DISPLAY[alert.tier]
+            direction = alert.trades[0]["type"] if alert.trades else "purchase"
+            header_color = "#16a34a" if direction == "purchase" else "#dc2626"
+            st.markdown(
+                f'<div style="background:{header_color};padding:10px 16px;border-radius:6px;margin-bottom:4px;">'
+                f'<span style="color:white;font-size:1.15em;font-weight:700;">{emoji} {tier_label} — {label}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(alert.message)
 
             trade_df = pd.DataFrame(alert.trades)
             cols = [c for c in ["representative", "ticker", "type", "amount", "transaction_date"] if c in trade_df.columns]
             trade_df = trade_df[cols].copy()
+            trade_df["type"] = trade_df["type"].apply(_fmt_type)
             trade_df["win_rate"] = trade_df["representative"].apply(
                 lambda n: win_rates.get(n, {}).get("win_rate")
             )
@@ -270,6 +289,7 @@ def _render_trades(trades: list[dict], sector_filter: str, type_filter: str, day
         st.info("No trades match the current filters.")
         return
 
+    df["type"] = df["type"].apply(_fmt_type)
     df["win_rate"] = df["representative"].apply(
         lambda n: win_rates.get(n, {}).get("win_rate")
     )
@@ -309,7 +329,7 @@ def _render_trades(trades: list[dict], sector_filter: str, type_filter: str, day
         _member_dialog(selected_name, days)
 
 
-def _render_leaderboard(win_rates: dict):
+def _render_leaderboard(win_rates: dict, days: int):
     rows = [
         {
             "Member": name,
@@ -340,9 +360,11 @@ def _render_leaderboard(win_rates: dict):
             return
         df = qualifying
 
-    st.dataframe(
+    event = st.dataframe(
         df,
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Win Rate": st.column_config.ProgressColumn(
                 f"Win Rate vs SPY ({config.WIN_RATE_PRIMARY}d)",
@@ -357,6 +379,9 @@ def _render_leaderboard(win_rates: dict):
             ),
         },
     )
+    if event.selection.rows:
+        selected_name = df.iloc[event.selection.rows[0]]["Member"]
+        _member_dialog(selected_name, days)
 
     st.caption(
         f"Win = member's {config.WIN_RATE_PRIMARY}-day return beats SPY over the same period. "
@@ -417,9 +442,9 @@ st.space("small")
 
 with st.container(horizontal=True):
     st.metric("Total Trades", len(trades), border=True)
-    st.metric("🔴 Cluster Alerts", len(cluster_alerts), border=True)
-    st.metric("🟡 Win-Rate Alerts", len(winrate_alerts), border=True)
-    st.metric("🟢 Watchlist Alerts", len(watchlist_alerts), border=True)
+    st.metric("⚡ Cluster Alerts", len(cluster_alerts), border=True)
+    st.metric("🏆 Win-Rate Alerts", len(winrate_alerts), border=True)
+    st.metric("👁️ Watchlist Alerts", len(watchlist_alerts), border=True)
 
 st.space("small")
 
@@ -427,7 +452,7 @@ st.space("small")
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
 tab_alerts, tab_trades, tab_leaderboard = st.tabs(
-    ["🔴 Alerts", "📋 Trades", "🏆 Leaderboard"],
+    ["🔔 Alerts", "📋 Trades", "🏆 Leaderboard"],
     on_change="rerun",
 )
 
@@ -441,4 +466,4 @@ if tab_trades.open:
 
 if tab_leaderboard.open:
     with tab_leaderboard:
-        _render_leaderboard(win_rates)
+        _render_leaderboard(win_rates, days)

@@ -202,7 +202,7 @@ def detect_cluster_alerts(trades: list[dict]) -> list[Alert]:
                     ticker  = ticker,
                     trades  = window_trades,
                     message = (
-                        f"🔴 CLUSTER: {len(members_in_window)} members {action} "
+                        f"⚡ CLUSTER: {len(members_in_window)} members {action} "
                         f"{ticker} between {earliest} and {latest}\n"
                         f"Members: {names}"
                     ),
@@ -242,7 +242,7 @@ def detect_winrate_alerts(
             ticker  = trade["ticker"],
             trades  = [trade],
             message = (
-                f"🟡 WIN-RATE: {member} filed a new trade ({trade['ticker']} "
+                f"🏆 WIN-RATE: {member} filed a new trade ({trade['ticker']} "
                 f"{trade['type'].upper()})\n"
                 f"Historical win rate: {wr:.0%} ({wins}/{tot} trades beat SPY "
                 f"over {config.WIN_RATE_PRIMARY}d)"
@@ -281,7 +281,7 @@ def detect_watchlist_alerts(trades: list[dict]) -> list[Alert]:
             ticker  = ticker,
             trades  = group,
             message = (
-                f"🟢 WATCHLIST: {member} — "
+                f"👁️ WATCHLIST: {member} — "
                 f"{ticker} {tx_type.upper()} "
                 f"on {date} "
                 f"({amount}){owner_str}"

@@ -40,11 +40,11 @@ WIN_RATE_PRIMARY    = 60    # primary scoring window (days vs SPY)
 # 🟢 Watchlist — members whose ANY trade triggers an alert
 WATCHLIST = [
     "Nancy Pelosi",
-    "Sheldon Whitehouse",
-    "David McCormick",
     "Josh Gottheimer",
     "Dan Crenshaw",
-    "Marjorie Taylor Greene",
+    "Tommy Tuberville",
+    "Mark Warner",
+    "Brian Mast",
 ]
 
 # ── Polling ───────────────────────────────────────────────────────────────────

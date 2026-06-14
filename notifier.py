@@ -63,11 +63,12 @@ def _trade_rows_html(trades: list[dict]) -> str:
     for t in trades:
         tx_type = t["type"].replace("_", " ").title()
         owner   = f" ({t['owner']})" if t.get("owner") else ""
+        color   = "#16a34a" if t["type"] == "purchase" else "#dc2626"
         rows += f"""
         <tr>
           <td style="padding:6px 12px;">{t['representative']}{owner}</td>
           <td style="padding:6px 12px;font-weight:bold;">{t['ticker']}</td>
-          <td style="padding:6px 12px;">{tx_type}</td>
+          <td style="padding:6px 12px;"><span style="color:{color};font-weight:600;">{tx_type}</span></td>
           <td style="padding:6px 12px;">{t['transaction_date']}</td>
           <td style="padding:6px 12px;">{t['amount']}</td>
           <td style="padding:6px 12px;">
@@ -81,10 +82,11 @@ def _trade_rows_text(trades: list[dict]) -> str:
     """Render a list of trades as plain text."""
     lines = []
     for t in trades:
-        tx_type = t["type"].replace("_", " ").upper()
-        owner   = f" ({t['owner']})" if t.get("owner") else ""
+        tx_type  = t["type"].replace("_", " ").upper()
+        owner    = f" ({t['owner']})" if t.get("owner") else ""
+        tx_emoji = "🟢" if t["type"] == "purchase" else "🔴"
         lines.append(
-            f"  {t['representative']}{owner} | {t['ticker']} {tx_type} | "
+            f"  {t['representative']}{owner} | {t['ticker']} {tx_emoji} {tx_type} | "
             f"{t['transaction_date']} | {t['amount']}"
         )
     return "\n".join(lines)
@@ -126,7 +128,7 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
     direction = "buying" if alert.trades[0]["type"] == "purchase" else "selling"
     dates    = sorted(t["transaction_date"] for t in alert.trades)
 
-    subject = f"🔴 CLUSTER ALERT — {n} members {direction} {alert.ticker}"
+    subject = f"⚡ CLUSTER ALERT — {n} members {direction} {alert.ticker}"
 
     text = (
         f"CLUSTER ALERT\n"
@@ -164,8 +166,8 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
       </p>"""
 
     html = _base_html(
-        title  = f"🔴 Cluster — {alert.ticker}",
-        accent = "#dc2626",
+        title  = f"⚡ Cluster — {alert.ticker}",
+        accent = "#1e3a5f",
         body   = body,
     )
     return subject, text, html
@@ -197,7 +199,7 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         conflict_text = "\nCommittee Conflicts: No committee data available"
 
     subject = (
-        f"🟡 HIGH WIN-RATE — {member} · "
+        f"🏆 HIGH WIN-RATE — {member} · "
         f"{ticker} {tx_type.upper()}"
     )
 
@@ -277,8 +279,8 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
       {conflict_html}"""
 
     html = _base_html(
-        title  = f"🟡 High Win-Rate — {member}",
-        accent = "#d97706",
+        title  = f"🏆 High Win-Rate — {member}",
+        accent = "#1e3a5f",
         body   = body,
     )
     return subject, text, html
@@ -313,7 +315,7 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
     chamber     = member_data.get("chamber", "")
 
     subject = (
-        f"🟢 WATCHLIST — {member} · "
+        f"👁️ WATCHLIST — {member} · "
         f"{ticker} {tx_type.upper()}"
     )
 
@@ -403,8 +405,8 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
       {conflict_html}"""
 
     html = _base_html(
-        title  = f"🟢 Watchlist — {member}",
-        accent = "#16a34a",
+        title  = f"👁️ Watchlist — {member}",
+        accent = "#1e3a5f",
         body   = body,
     )
     return subject, text, html
@@ -469,7 +471,7 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
     alert_items = ""
     if alerts:
         for a in alerts:
-            color = {"cluster": "#dc2626", "winrate": "#d97706", "watchlist": "#16a34a"}.get(a.tier, "#6b7280")
+            color = "#6b7280"
             alert_items += f"""
             <li style="margin:8px 0;padding:10px 14px;background:#f9fafb;
                         border-left:3px solid {color};border-radius:4px;font-size:14px;">
