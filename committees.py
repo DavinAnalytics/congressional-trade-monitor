@@ -271,10 +271,34 @@ def get_member_committees(name: str) -> dict:
     Return committee data for a member by name.
     Returns dict with keys: name, chamber, committees, subcommittees
     Returns empty dict if not found.
+
+    Handles two name formats:
+      "First [Middle] Last"  — used by committee cache keys
+      "Last, First [Middle]" — used by trade disclosure fetcher
     """
     if not any(_CACHE_LOADED.values()):
         load_all()
-    return _COMMITTEE_CACHE.get(name.lower(), {})
+
+    key = name.lower().strip()
+    if key in _COMMITTEE_CACHE:
+        return _COMMITTEE_CACHE[key]
+
+    # Trade disclosures use "Last, First [Middle]" — convert and retry
+    if "," in key:
+        last, _, first = key.partition(",")
+        last = last.strip()
+        first = first.strip()
+        # Try "First [Middle] Last"
+        alt = f"{first} {last}"
+        if alt in _COMMITTEE_CACHE:
+            return _COMMITTEE_CACHE[alt]
+        # Try without middle initial: "David J." → "David"
+        first_only = first.split()[0]
+        alt_no_mid = f"{first_only} {last}"
+        if alt_no_mid in _COMMITTEE_CACHE:
+            return _COMMITTEE_CACHE[alt_no_mid]
+
+    return {}
 
 
 def flag_conflicts(name: str, ticker: str) -> list[str]:

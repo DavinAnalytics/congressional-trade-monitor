@@ -10,6 +10,9 @@ Instead, calls individual detectors directly.
 
 import streamlit as st
 import pandas as pd
+import altair as alt
+import yfinance as yf
+from datetime import datetime, timedelta
 
 st.set_page_config(
     page_title="Congressional Trade Monitor",
@@ -30,6 +33,8 @@ import config
 
 # ── Caching ────────────────────────────────────────────────────────────────────
 
+MAX_DAYS = 90  # always fetch the full window; slider filters in memory
+
 @st.cache_resource
 def _load_committees():
     """Populate the committees module-level cache once per process."""
@@ -37,20 +42,27 @@ def _load_committees():
 
 
 @st.cache_data(ttl="1h")
-def _fetch_trades(days: int) -> list[dict]:
-    return fetch_all(days=days)
+def _fetch_trades_raw() -> list[dict]:
+    return fetch_all(days=MAX_DAYS)
+
+
+def _filter_trades(days: int) -> list[dict]:
+    cutoff = datetime.now() - timedelta(days=days)
+    return [
+        t for t in _fetch_trades_raw()
+        if datetime.strptime(t["transaction_date"], "%Y-%m-%d") >= cutoff
+    ]
 
 
 @st.cache_data(ttl="1h")
-def _get_win_rates(days: int) -> dict:
-    trades = _fetch_trades(days)
-    return compute_win_rates(trades)
+def _get_win_rates() -> dict:
+    return compute_win_rates(_fetch_trades_raw())
 
 
 @st.cache_data(ttl="1h")
 def _get_alerts(days: int) -> list:
-    trades = _fetch_trades(days)
-    win_rates = _get_win_rates(days)
+    trades = _filter_trades(days)
+    win_rates = _get_win_rates()
     cluster = detect_cluster_alerts(trades)
     winrate = detect_winrate_alerts(trades, win_rates)
     watchlist = detect_watchlist_alerts(trades)
@@ -59,12 +71,47 @@ def _get_alerts(days: int) -> list:
     return combined
 
 
+@st.cache_data(ttl="24h")
+def _get_company_name(ticker: str) -> str:
+    try:
+        name = yf.Ticker(ticker).info.get("shortName") or ticker
+        return name.removesuffix(" (The)").removesuffix(", The")
+    except Exception:
+        return ticker
+
+
+@st.cache_data(ttl="1h")
+def _get_price_history(ticker: str, start_date: str) -> pd.DataFrame:
+    """
+    Fetch daily close for ticker and SPY from start_date to today, indexed to 100.
+    Returns DataFrame with columns [ticker, "SPY"] so both start at 100 for easy comparison.
+    """
+    import logging, contextlib, io as _io
+    tickers = [ticker, "SPY"] if ticker != "SPY" else ["SPY"]
+    with contextlib.redirect_stderr(_io.StringIO()):
+        try:
+            logging.disable(logging.CRITICAL)
+            raw = yf.download(tickers, start=start_date, progress=False, auto_adjust=True)
+            logging.disable(logging.NOTSET)
+        except Exception:
+            return pd.DataFrame()
+    if raw.empty:
+        return pd.DataFrame()
+    close = raw["Close"]
+    if isinstance(close, pd.Series):
+        close = close.to_frame(name=ticker)
+    close = close.dropna(how="all")
+    if close.empty:
+        return pd.DataFrame()
+    return (close / close.iloc[0] * 100).reset_index()
+
+
 # ── Member detail dialog ───────────────────────────────────────────────────────
 
 @st.dialog("Member Detail", width="large")
 def _member_dialog(name: str, days: int):
-    trades = _fetch_trades(days)
-    win_rates = _get_win_rates(days)
+    trades = _filter_trades(days)
+    win_rates = _get_win_rates()
 
     member_trades = [t for t in trades if t["representative"] == name]
     stats = win_rates.get(name)
@@ -92,13 +139,13 @@ def _member_dialog(name: str, days: int):
                 column_config={
                     "representative": None,
                     "asset_description": None,
+                    "chamber": None,
                     "transaction_date": st.column_config.DateColumn("Tx Date", format="MMM DD, YYYY"),
                     "disclosure_date": st.column_config.TextColumn("Disclosed"),
                     "ptr_link": st.column_config.LinkColumn("Filing"),
                     "ticker": st.column_config.TextColumn("Ticker"),
                     "type": st.column_config.TextColumn("Type"),
                     "amount": st.column_config.TextColumn("Amount"),
-                    "chamber": st.column_config.TextColumn("Chamber"),
                     "owner": st.column_config.TextColumn("Owner"),
                 },
             )
@@ -123,24 +170,38 @@ def _member_dialog(name: str, days: int):
 
 # ── Tab renderers ──────────────────────────────────────────────────────────────
 
-def _render_alerts(alerts: list):
+def _render_alerts(alerts: list, win_rates: dict):
     if not alerts:
         st.info("No alerts in the current window.", icon=":material/check_circle:")
         return
 
     for alert in alerts:
+        company = _get_company_name(alert.ticker)
+        label = f"{company} ({alert.ticker})" if company != alert.ticker else alert.ticker
+
         with st.container(border=True):
             if alert.tier == "cluster":
-                st.error(f"**🔴 CLUSTER — {alert.ticker}**\n\n{alert.message}")
+                st.error(f"**🔴 CLUSTER — {label}**\n\n{alert.message}")
             elif alert.tier == "winrate":
-                st.warning(f"**🟡 WIN-RATE — {alert.ticker}**\n\n{alert.message}")
+                st.warning(f"**🟡 WIN-RATE — {label}**\n\n{alert.message}")
             else:
-                st.success(f"**🟢 WATCHLIST — {alert.ticker}**\n\n{alert.message}")
+                st.success(f"**🟢 WATCHLIST — {label}**\n\n{alert.message}")
 
             trade_df = pd.DataFrame(alert.trades)
-            cols = [c for c in ["representative", "ticker", "type", "amount", "transaction_date", "chamber"] if c in trade_df.columns]
+            cols = [c for c in ["representative", "ticker", "type", "amount", "transaction_date"] if c in trade_df.columns]
+            trade_df = trade_df[cols].copy()
+            trade_df["win_rate"] = trade_df["representative"].apply(
+                lambda n: win_rates.get(n, {}).get("win_rate")
+            )
+            trade_df["committees"] = trade_df["representative"].apply(
+                lambda n: ", ".join(get_member_committees(n).get("committees", [])[:2]) or "—"
+            )
+            st.link_button(
+                f"📈 {label} on TradingView",
+                f"https://www.tradingview.com/chart/?symbol={alert.ticker}",
+            )
             st.dataframe(
-                trade_df[cols],
+                trade_df,
                 hide_index=True,
                 column_config={
                     "representative": st.column_config.TextColumn("Member"),
@@ -148,20 +209,60 @@ def _render_alerts(alerts: list):
                     "ticker": st.column_config.TextColumn("Ticker"),
                     "type": st.column_config.TextColumn("Type"),
                     "amount": st.column_config.TextColumn("Amount"),
-                    "chamber": st.column_config.TextColumn("Chamber"),
+                    "win_rate": st.column_config.ProgressColumn(
+                        "Win Rate", min_value=0, max_value=1, format="percent"
+                    ),
+                    "committees": st.column_config.TextColumn("Committees"),
                 },
             )
             st.caption(f"Detected: {alert.fired_at[:16]}")
 
+            earliest = min(t["transaction_date"] for t in alert.trades)
+            hist = _get_price_history(alert.ticker, earliest)
+            if not hist.empty:
+                hist_long = hist.melt(id_vars="Date", var_name="Symbol", value_name="Value")
+                y_min = hist_long["Value"].min()
+                y_max = hist_long["Value"].max()
+                pad = max((y_max - y_min) * 0.2, 1.5)
+                chart = (
+                    alt.Chart(hist_long)
+                    .mark_line(strokeWidth=2)
+                    .encode(
+                        x=alt.X("Date:T", title=None),
+                        y=alt.Y(
+                            "Value:Q",
+                            scale=alt.Scale(domain=[y_min - pad, y_max + pad]),
+                            title="Indexed to 100 at first trade",
+                        ),
+                        color=alt.Color(
+                            "Symbol:N",
+                            scale=alt.Scale(
+                                domain=[alert.ticker, "SPY"],
+                                range=["#3a86ff", "#e63946"],
+                            ),
+                            legend=alt.Legend(orient="bottom"),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("Date:T", title="Date"),
+                            alt.Tooltip("Symbol:N", title="Symbol"),
+                            alt.Tooltip("Value:Q", format=".1f", title="Value"),
+                        ],
+                    )
+                    .properties(height=320, width="container")
+                )
+                st.caption(f"Price performance since first trade ({earliest}) — indexed to 100 at open")
+                st.altair_chart(chart)
 
-def _render_trades(trades: list[dict], chamber_filter: str, type_filter: str, days: int):
+
+def _render_trades(trades: list[dict], sector_filter: str, type_filter: str, days: int, win_rates: dict):
     df = pd.DataFrame(trades)
     if df.empty:
         st.info("No trades in the current window.")
         return
 
-    if chamber_filter != "All":
-        df = df[df["chamber"] == chamber_filter]
+    if sector_filter != "All":
+        sector_tickers = set(config.SECTOR_TICKERS.get(sector_filter, []))
+        df = df[df["ticker"].isin(sector_tickers)]
     if type_filter != "All":
         df = df[df["type"] == type_filter]
 
@@ -169,8 +270,11 @@ def _render_trades(trades: list[dict], chamber_filter: str, type_filter: str, da
         st.info("No trades match the current filters.")
         return
 
-    df["conflict"] = df.apply(
-        lambda r: " | ".join(flag_conflicts(r["representative"], r["ticker"])) or "", axis=1
+    df["win_rate"] = df["representative"].apply(
+        lambda n: win_rates.get(n, {}).get("win_rate")
+    )
+    df["committees"] = df["representative"].apply(
+        lambda n: ", ".join(get_member_committees(n).get("committees", [])[:2]) or "—"
     )
     df["transaction_date"] = pd.to_datetime(df["transaction_date"])
     df = df.sort_values("transaction_date", ascending=False)
@@ -184,16 +288,19 @@ def _render_trades(trades: list[dict], chamber_filter: str, type_filter: str, da
         selection_mode="single-row",
         column_config={
             "representative": st.column_config.TextColumn("Member", pinned=True),
-            "chamber": st.column_config.TextColumn("Chamber"),
             "ticker": st.column_config.TextColumn("Ticker"),
             "type": st.column_config.TextColumn("Type"),
             "amount": st.column_config.TextColumn("Amount"),
             "transaction_date": st.column_config.DateColumn("Tx Date", format="MMM DD, YYYY"),
             "disclosure_date": st.column_config.TextColumn("Disclosed"),
             "ptr_link": st.column_config.LinkColumn("Filing"),
-            "conflict": st.column_config.TextColumn("⚠ Conflict"),
+            "win_rate": st.column_config.ProgressColumn(
+                "Win Rate", min_value=0, max_value=1, format="percent"
+            ),
+            "committees": st.column_config.TextColumn("Committees"),
             "asset_description": None,
             "owner": st.column_config.TextColumn("Owner"),
+            "chamber": None,
         },
     )
 
@@ -257,56 +364,13 @@ def _render_leaderboard(win_rates: dict):
     )
 
 
-def _render_members(trades: list[dict], win_rates: dict, days: int):
-    if not trades:
-        st.info("No trades in the current window.")
-        return
-
-    members = sorted({t["representative"] for t in trades})
-    rows = []
-    for m in members:
-        member_trades = [t for t in trades if t["representative"] == m]
-        chamber = next((t["chamber"] for t in member_trades), "")
-        stats = win_rates.get(m)
-        rows.append({
-            "Member": m,
-            "Chamber": chamber,
-            "Trades": len(member_trades),
-            "Win Rate": stats["win_rate"] if stats and stats["total"] > 0 else None,
-            "Qualifies": stats["qualifies"] if stats else False,
-        })
-
-    member_df = pd.DataFrame(rows)
-
-    st.caption("Click a row to open member detail — committees, conflicts, and recent trades.")
-
-    event = st.dataframe(
-        member_df,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        column_config={
-            "Win Rate": st.column_config.ProgressColumn(
-                "Win Rate vs SPY",
-                min_value=0,
-                max_value=1,
-                format="percent",
-            ),
-            "Qualifies": st.column_config.CheckboxColumn("✓ Qualifies"),
-        },
-    )
-
-    if event.selection.rows:
-        selected_name = member_df.iloc[event.selection.rows[0]]["Member"]
-        _member_dialog(selected_name, days)
-
-
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.title(":material/monitoring: Trade Monitor")
     days = st.slider("Days window", min_value=7, max_value=90, value=45)
-    chamber_filter = st.selectbox("Chamber", ["All", "Senate", "House"])
+    sector_options = ["All"] + sorted(config.SECTOR_TICKERS.keys())
+    sector_filter = st.selectbox("Sector", sector_options)
     type_filter = st.selectbox(
         "Trade type",
         ["All", "purchase", "sale", "sale_partial"],
@@ -329,10 +393,12 @@ with st.sidebar:
 _load_committees()
 
 with st.spinner("Fetching congressional trades from government sources..."):
-    trades = _fetch_trades(days)
+    _fetch_trades_raw()  # warm the cache
+
+trades = _filter_trades(days)
 
 with st.spinner("Scoring win rates against SPY (yfinance)..."):
-    win_rates = _get_win_rates(days)
+    win_rates = _get_win_rates()
 
 with st.spinner("Detecting alerts..."):
     alerts = _get_alerts(days)
@@ -360,23 +426,19 @@ st.space("small")
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-tab_alerts, tab_trades, tab_leaderboard, tab_members = st.tabs(
-    ["🔴 Alerts", "📋 Trades", "🏆 Leaderboard", "👤 Members"],
+tab_alerts, tab_trades, tab_leaderboard = st.tabs(
+    ["🔴 Alerts", "📋 Trades", "🏆 Leaderboard"],
     on_change="rerun",
 )
 
 if tab_alerts.open:
     with tab_alerts:
-        _render_alerts(alerts)
+        _render_alerts(alerts, win_rates)
 
 if tab_trades.open:
     with tab_trades:
-        _render_trades(trades, chamber_filter, type_filter, days)
+        _render_trades(trades, sector_filter, type_filter, days, win_rates)
 
 if tab_leaderboard.open:
     with tab_leaderboard:
         _render_leaderboard(win_rates)
-
-if tab_members.open:
-    with tab_members:
-        _render_members(trades, win_rates, days)
