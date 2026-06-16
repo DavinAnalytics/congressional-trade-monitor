@@ -418,6 +418,9 @@ def _render_trades(trades: list[dict], days: int, win_rates: dict):
         return
 
     df["type"] = df["type"].apply(_fmt_type)
+    df["amount"] = df["amount"].apply(
+        lambda s: f"~{_fmt_dollars(_parse_amount(s))}" if _parse_amount(s) > 0 else (s or "—")
+    )
     df["win_rate"] = df["representative"].apply(
         lambda n: win_rates.get(n, {}).get("win_rate")
     )
@@ -426,6 +429,11 @@ def _render_trades(trades: list[dict], days: int, win_rates: dict):
     )
     df["transaction_date"] = pd.to_datetime(df["transaction_date"])
     df = df.sort_values("transaction_date", ascending=False)
+    col_order = [c for c in [
+        "representative", "ticker", "type", "amount", "transaction_date",
+        "committees", "win_rate", "disclosure_date", "owner", "ptr_link",
+    ] if c in df.columns]
+    df = df[col_order]
 
     st.caption(f"{len(df)} trade(s) shown — click a row to open member detail")
 
