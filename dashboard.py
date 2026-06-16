@@ -235,8 +235,8 @@ def _render_summary(trades: list[dict]):
     top_sold_dollars   = sorted([(tk, v) for tk, v in net_dollars.items() if v < 0 and net_counts.get(tk, 0)  <= 0], key=lambda x: x[1])[:5]
 
     # ── Sector heat ───────────────────────────────────────────────────────────
-    sector_net: dict[str, int] = {}
-    for ticker, net in net_counts.items():
+    sector_net: dict[str, float] = {}
+    for ticker, net in net_dollars.items():
         for sector, tickers in config.SECTOR_TICKERS.items():
             if ticker.upper() in [t.upper() for t in tickers]:
                 sector_net[sector] = sector_net.get(sector, 0) + net
@@ -254,13 +254,13 @@ def _render_summary(trades: list[dict]):
         sh1.metric(
             "🔥 Hot Sector (most net buying)",
             hot_sector,
-            delta=f"{_signed_count(h_net)} net trades",
+            delta=f"{_signed_dollars(h_net)} est.",
         )
         if hot_sector != cold_sector:
             sh2.metric(
                 "❄️ Avoid Sector (most net selling)",
                 cold_sector,
-                delta=f"{_signed_count(c_net)} net trades",
+                delta=f"{_signed_dollars(c_net)} est.",
             )
 
     st.markdown("#### ⚖️ Net Activity")
