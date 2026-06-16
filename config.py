@@ -83,6 +83,7 @@ SECTOR_TICKERS = {
     "Agriculture":      ["ADM", "BG", "MOS", "CF", "FMC", "DE", "CTVA"],
     "Transportation":   ["UNP", "CSX", "NSC", "UPS", "FDX", "DAL", "UAL", "LUV"],
     "Pharma":           ["LLY", "MRK", "BMY", "GILD", "BIIB", "AMGN", "REGN", "VRTX"],
+    "Crypto":           ["IBIT", "FBTC", "GBTC", "ETHA", "ARKB", "BTCO", "COIN", "MSTR", "MARA", "RIOT", "CLSK", "HUT"],
 }
 
 # Maps committee/subcommittee keywords to the sectors they oversee
@@ -168,6 +169,13 @@ COMMITTEE_SECTORS = {
         "Pharmaceutical",
         "Aging",
         "Medicare",
+    ],
+    "Crypto": [
+        "Banking",
+        "Financial Services",
+        "Digital Assets",
+        "Agriculture",  # CFTC oversight of crypto derivatives
+        "Securities",
     ],
 }
 
