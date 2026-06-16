@@ -34,7 +34,7 @@ import config
 
 # ── Caching ────────────────────────────────────────────────────────────────────
 
-MAX_DAYS = 90  # always fetch the full window; slider filters in memory
+MAX_DAYS = 180  # always fetch the full window; slider filters in memory
 
 @st.cache_resource
 def _load_committees():
@@ -517,7 +517,7 @@ def _render_leaderboard(win_rates: dict, days: int):
 
 with st.sidebar:
     st.title(":material/monitoring: Trade Monitor")
-    days = st.slider("Days window", min_value=7, max_value=90, value=45)
+    days = st.slider("Days window", min_value=7, max_value=180, value=45)
 
 
 # ── Load data ──────────────────────────────────────────────────────────────────
