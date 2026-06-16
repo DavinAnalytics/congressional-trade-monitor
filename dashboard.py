@@ -407,20 +407,10 @@ def _render_alerts(alerts: list, win_rates: dict):
                 st.altair_chart(chart)
 
 
-def _render_trades(trades: list[dict], sector_filter: str, type_filter: str, days: int, win_rates: dict):
+def _render_trades(trades: list[dict], days: int, win_rates: dict):
     df = pd.DataFrame(trades)
     if df.empty:
         st.info("No trades in the current window.")
-        return
-
-    if sector_filter != "All":
-        sector_tickers = set(config.SECTOR_TICKERS.get(sector_filter, []))
-        df = df[df["ticker"].isin(sector_tickers)]
-    if type_filter != "All":
-        df = df[df["type"] == type_filter]
-
-    if df.empty:
-        st.info("No trades match the current filters.")
         return
 
     df["type"] = df["type"].apply(_fmt_type)
@@ -528,23 +518,6 @@ def _render_leaderboard(win_rates: dict, days: int):
 with st.sidebar:
     st.title(":material/monitoring: Trade Monitor")
     days = st.slider("Days window", min_value=7, max_value=90, value=45)
-    sector_options = ["All"] + sorted(config.SECTOR_TICKERS.keys())
-    sector_filter = st.selectbox("Sector", sector_options)
-    type_filter = st.selectbox(
-        "Trade type",
-        ["All", "purchase", "sale", "sale_partial"],
-        format_func=lambda x: {
-            "All": "All types",
-            "purchase": "Purchase",
-            "sale": "Sale",
-            "sale_partial": "Partial Sale",
-        }.get(x, x),
-    )
-    st.divider()
-    if st.button(":material/refresh: Refresh Data", type="primary"):
-        st.cache_data.clear()
-        st.rerun()
-    st.caption("Trade data and win rates are cached for 1 hour.")
 
 
 # ── Load data ──────────────────────────────────────────────────────────────────
@@ -597,7 +570,7 @@ if tab_alerts.open:
 
 if tab_trades.open:
     with tab_trades:
-        _render_trades(trades, sector_filter, type_filter, days, win_rates)
+        _render_trades(trades, days, win_rates)
 
 if tab_leaderboard.open:
     with tab_leaderboard:
