@@ -20,6 +20,10 @@ st.set_page_config(
     page_icon=":material/monitoring:",
     layout="wide",
 )
+st.markdown(
+    "<style>.stCacheSpinner { display: none !important; }</style>",
+    unsafe_allow_html=True,
+)
 
 from fetcher import fetch_all
 from analyzer import (
