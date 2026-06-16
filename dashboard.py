@@ -522,18 +522,22 @@ with st.sidebar:
 
 # ── Load data ──────────────────────────────────────────────────────────────────
 
-_load_committees()
+with st.status("Loading congressional trade data...", expanded=True) as _status:
+    st.write("Loading committee assignments...")
+    _load_committees()
 
-with st.spinner("Fetching congressional trades from government sources..."):
-    _fetch_trades_raw()  # warm the cache
+    st.write("Fetching Senate and House trade disclosures (may take up to a minute on first load)...")
+    _fetch_trades_raw()
 
-trades = _filter_trades(days)
-
-with st.spinner("Scoring win rates against SPY (yfinance)..."):
+    st.write("Scoring trades against SPY performance (yfinance)...")
     win_rates = _get_win_rates()
 
-with st.spinner("Detecting alerts..."):
+    st.write("Detecting cluster, win-rate, and watchlist alerts...")
     alerts = _get_alerts(days)
+
+    _status.update(label="Data loaded", state="complete", expanded=False)
+
+trades = _filter_trades(days)
 
 cluster_alerts = [a for a in alerts if a.tier == "cluster"]
 winrate_alerts = [a for a in alerts if a.tier == "winrate"]
