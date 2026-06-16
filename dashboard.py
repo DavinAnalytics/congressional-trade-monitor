@@ -522,7 +522,8 @@ with st.sidebar:
 
 # ── Load data ──────────────────────────────────────────────────────────────────
 
-with st.status("Loading congressional trade data...", expanded=True) as _status:
+_loading_slot = st.empty()
+with _loading_slot.status("Loading congressional trade data...", expanded=True) as _status:
     st.write("Loading committee assignments...")
     _load_committees()
 
@@ -536,6 +537,7 @@ with st.status("Loading congressional trade data...", expanded=True) as _status:
     alerts = _get_alerts(days)
 
     _status.update(label="Data loaded", state="complete", expanded=False)
+_loading_slot.empty()
 
 trades = _filter_trades(days)
 
