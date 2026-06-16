@@ -12,6 +12,7 @@ Public interface:
   send_summary(alerts, trades) -> None  (daily digest, optional)
 """
 
+import re
 import smtplib
 import traceback
 from email.mime.multipart import MIMEMultipart
@@ -55,6 +56,23 @@ def _send_email(subject: str, body_text: str, body_html: str) -> bool:
         return False
 
 
+# ── Amount formatting ─────────────────────────────────────────────────────────
+
+def _fmt_amount(s: str) -> str:
+    """Convert a disclosure range string to a midpoint estimate, e.g. '~$8K'."""
+    if not s or s.lower().startswith("none"):
+        return "—"
+    nums = [float(n.replace(",", "")) for n in re.findall(r"[\d,]+", s)]
+    v = (nums[0] + nums[1]) / 2 if len(nums) >= 2 else (nums[0] if nums else 0)
+    if v <= 0:
+        return s
+    if v >= 1_000_000:
+        return f"~${v / 1_000_000:.1f}M"
+    if v >= 1_000:
+        return f"~${v / 1_000:.0f}K"
+    return f"~${v:.0f}"
+
+
 # ── Template helpers ──────────────────────────────────────────────────────────
 
 def _trade_rows_html(trades: list[dict]) -> str:
@@ -70,7 +88,7 @@ def _trade_rows_html(trades: list[dict]) -> str:
           <td style="padding:6px 12px;font-weight:bold;">{t['ticker']}</td>
           <td style="padding:6px 12px;"><span style="color:{color};font-weight:600;">{tx_type}</span></td>
           <td style="padding:6px 12px;">{t['transaction_date']}</td>
-          <td style="padding:6px 12px;">{t['amount']}</td>
+          <td style="padding:6px 12px;">{_fmt_amount(t['amount'])}</td>
           <td style="padding:6px 12px;">
             <a href="{t['ptr_link']}" style="color:#2563eb;">Filing ↗</a>
           </td>
@@ -87,7 +105,7 @@ def _trade_rows_text(trades: list[dict]) -> str:
         tx_emoji = "🟢" if t["type"] == "purchase" else "🔴"
         lines.append(
             f"  {t['representative']}{owner} | {t['ticker']} {tx_emoji} {tx_type} | "
-            f"{t['transaction_date']} | {t['amount']}"
+            f"{t['transaction_date']} | {_fmt_amount(t['amount'])}"
         )
     return "\n".join(lines)
 
@@ -335,7 +353,7 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         f"Ticker:    {ticker}\n"
         f"Type:      {tx_type}\n"
         f"Date:      {trade['transaction_date']}\n"
-        f"Amount:    {trade['amount']}\n"
+        f"Amount:    {_fmt_amount(trade['amount'])}\n"
         f"Win Rate:  {wr_str}"
         f"{conflict_text}\n\n"
         f"Filing:    {trade['ptr_link']}"

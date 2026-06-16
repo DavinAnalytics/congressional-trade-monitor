@@ -347,6 +347,9 @@ def _render_alerts(alerts: list, win_rates: dict):
             cols = [c for c in ["representative", "ticker", "type", "amount", "transaction_date"] if c in trade_df.columns]
             trade_df = trade_df[cols].copy()
             trade_df["type"] = trade_df["type"].apply(_fmt_type)
+            trade_df["amount"] = trade_df["amount"].apply(
+                lambda s: f"~{_fmt_dollars(_parse_amount(s))}" if _parse_amount(s) > 0 else (s or "—")
+            )
             trade_df["win_rate"] = trade_df["representative"].apply(
                 lambda n: win_rates.get(n, {}).get("win_rate")
             )
