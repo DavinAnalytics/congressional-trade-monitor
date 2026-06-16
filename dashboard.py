@@ -43,21 +43,21 @@ def _load_committees():
 
 
 @st.cache_data(ttl="1h")
-def _fetch_trades_raw() -> list[dict]:
-    return fetch_all(days=MAX_DAYS)
+def _fetch_trades_raw(days: int) -> list[dict]:
+    return fetch_all(days=days)
 
 
 def _filter_trades(days: int) -> list[dict]:
     cutoff = datetime.now() - timedelta(days=days)
     return [
-        t for t in _fetch_trades_raw()
+        t for t in _fetch_trades_raw(MAX_DAYS)
         if datetime.strptime(t["transaction_date"], "%Y-%m-%d") >= cutoff
     ]
 
 
 @st.cache_data(ttl="1h")
 def _get_win_rates() -> dict:
-    return compute_win_rates(_fetch_trades_raw())
+    return compute_win_rates(_fetch_trades_raw(MAX_DAYS))
 
 
 @st.cache_data(ttl="1h")
@@ -528,7 +528,7 @@ with _loading_slot.status("Loading congressional trade data...", expanded=True) 
     _load_committees()
 
     st.write("Fetching Senate and House trade disclosures (may take up to a minute on first load)...")
-    _fetch_trades_raw()
+    _fetch_trades_raw(MAX_DAYS)
 
     st.write("Scoring trades against SPY performance (yfinance)...")
     win_rates = _get_win_rates()
