@@ -415,6 +415,10 @@ def _render_alerts(alerts: list, win_rates: dict):
 
 
 def _render_trades(trades: list[dict], days: int, win_rates: dict):
+    ticker_filter = st.text_input("Filter by ticker", placeholder="e.g. NVDA", label_visibility="collapsed").strip().upper()
+    if ticker_filter:
+        trades = [t for t in trades if t.get("ticker", "").upper() == ticker_filter]
+
     df = pd.DataFrame(trades)
     if df.empty:
         st.info("No trades in the current window.")
