@@ -291,6 +291,87 @@ def detect_watchlist_alerts(trades: list[dict]) -> list[Alert]:
     return alerts
 
 
+# ── Cross-cluster detection (congressional + insider overlap) ────────────────
+
+def find_cross_signals(
+    congress_trades: list[dict],
+    insider_trades:  list[dict],
+    window_days:     int = config.CLUSTER_DAYS,
+) -> list[dict]:
+    """
+    Find tickers bought by BOTH a member of Congress and a company insider
+    (CEO/CFO) within `window_days` of each other.
+
+    Only congressional purchases count on the congressional side; insider trades
+    are all open-market buys by construction (openinsider_fetcher).
+
+    Returns one match dict per qualifying ticker:
+      {ticker, congress: [...], insider: [...], first: datetime, last: datetime, span_days}
+    Pure function — no I/O — so the dashboard can reuse it.
+    """
+    cong_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for t in congress_trades:
+        if t["type"] == "purchase":
+            cong_by_ticker[t["ticker"].upper()].append(t)
+
+    ins_by_ticker: dict[str, list[dict]] = defaultdict(list)
+    for t in insider_trades:
+        ins_by_ticker[t["ticker"].upper()].append(t)
+
+    matches = []
+    for ticker in set(cong_by_ticker) & set(ins_by_ticker):
+        congress = cong_by_ticker[ticker]
+        insider  = ins_by_ticker[ticker]
+        dates = [
+            datetime.strptime(t["transaction_date"], "%Y-%m-%d")
+            for t in congress + insider
+        ]
+        first, last = min(dates), max(dates)
+        span_days = (last - first).days
+        if span_days <= window_days:
+            matches.append({
+                "ticker":    ticker,
+                "congress":  congress,
+                "insider":   insider,
+                "first":     first,
+                "last":      last,
+                "span_days": span_days,
+            })
+
+    return matches
+
+
+def detect_cross_cluster_alerts(
+    congress_trades: list[dict],
+    insider_trades:  list[dict],
+) -> list[Alert]:
+    """
+    🔗 Cross-Cluster Alert
+    Fire when 1+ congressional buy AND 1+ CEO/CFO open-market buy hit the same
+    ticker within the cluster window. Stronger conviction signal than either alone.
+    """
+    alerts = []
+    for m in find_cross_signals(congress_trades, insider_trades):
+        # Tag congressional trades with a source so the email formatter can split
+        # the two groups; insider trades already carry source="insider".
+        tagged = [{**t, "source": "congress"} for t in m["congress"]] + m["insider"]
+        members  = sorted({t["representative"] for t in m["congress"]})
+        insiders = sorted({t["name"] for t in m["insider"]})
+
+        alerts.append(Alert(
+            tier    = "cross_cluster",
+            ticker  = m["ticker"],
+            trades  = tagged,
+            message = (
+                f"🔗 CROSS-SIGNAL: {m['ticker']} — {len(m['congress'])} congressional "
+                f"buy(s) + {len(m['insider'])} CEO/CFO buy(s), {m['span_days']} days apart\n"
+                f"Congress: {', '.join(members)} | Insiders: {', '.join(insiders)}"
+            ),
+        ))
+
+    return alerts
+
+
 # ── Seen-trades deduplication (Gist-backed for GitHub Actions) ───────────────
 
 def _gist_enabled() -> bool:
@@ -379,6 +460,47 @@ def mark_seen(trades: list[dict], seen: set[str]) -> None:
     for t in trades:
         seen.add(_trade_key(t))
     _save_seen(seen)
+
+
+def _cross_key(alert: Alert) -> str:
+    """
+    Unique key for a cross-cluster alert — used to avoid re-alerting.
+    Built from the full set of participating trades, so a new buyer joining a
+    ticker produces a fresh alert while an unchanged overlap stays deduped.
+    """
+    parts = []
+    for t in alert.trades:
+        if t.get("source") == "insider":
+            parts.append(f"{t['name']}|{t['ticker']}|{t['transaction_date']}|insider")
+        else:
+            parts.append(_trade_key(t))
+    return f"crosscluster|{alert.ticker}|" + "|".join(sorted(parts))
+
+
+def analyze_cross_cluster(
+    congress_trades: list[dict],
+    insider_trades:  list[dict],
+) -> list[Alert]:
+    """
+    Detect cross-cluster alerts, dedupe against the shared seen set, and persist.
+    Mirrors analyze() — reuses the same seen_trades.json / Gist state, no new file.
+    Called by monitor.py on every poll cycle.
+    """
+    raw = detect_cross_cluster_alerts(congress_trades, insider_trades)
+    if not raw:
+        return []
+
+    seen  = _load_seen()
+    fresh = []
+    for alert in raw:
+        key = _cross_key(alert)
+        if key not in seen:
+            seen.add(key)
+            fresh.append(alert)
+
+    if fresh:
+        _save_seen(seen)
+    return fresh
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────

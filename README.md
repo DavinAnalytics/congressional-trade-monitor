@@ -3,7 +3,7 @@
 **Status:** ✅ Complete - all modules built and tested  
 **Live dashboard:** https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair  
-**Purpose:** Personal-use automation tool that monitors congressional stock disclosures, detects high-signal trading patterns, sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
+**Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider (CEO/CFO) open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
 
 ---
 
@@ -13,15 +13,18 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 
 **Core insight driving the design:** The top-performer leaderboard is non-sticky year to year; none of the top performers of 2024 showed up in top performers of 2025. Instead of chasing one politician (e.g. Pelosi), broad monitoring with cluster detection is the smarter decision.
 
+**Insider cross-referencing:** Beyond Congress, the monitor also scrapes open-market purchases by corporate CEOs and CFOs (via OpenInsider) and raises a **Cross-Signal** alert when the same ticker is being accumulated by both Congress and a company's own executives within the 45-day window — a stronger conviction signal than either source alone.
+
 ---
 
 ## Alert Tiers
 
 | Tier | Signal | Trigger |
 |------|--------|---------|
-| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest signal |
+| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal |
 | 🏆 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
 | 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
+| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal |
 
 Alert header color in the dashboard and email reflects trade direction: **green** for net buy activity, **red** for net sell activity — independent of tier.
 
@@ -38,6 +41,9 @@ cp .env.example .env
 
 # Launch the visual dashboard (no credentials required)
 python -m streamlit run dashboard.py
+
+# Preview filtered OpenInsider CEO/CFO buys
+python openinsider_fetcher.py
 
 # Test one full cycle (fetch → analyze → alerts)
 python monitor.py --once
@@ -68,6 +74,7 @@ python -m streamlit run dashboard.py
 | 🔔 Alerts | All fired alerts with colored buy/sell header, trades table, win rate, committee assignments, Altair price chart vs SPY, TradingView link |
 | 📋 Trades | Full trade log filterable by sector and type; win rate progress bar; committee column; click any row for member detail modal |
 | 🏆 Leaderboard | Win rate rankings; click any row for member detail modal |
+| 🏢 Insider Buys | CEO/CFO open-market buys (date, name, title, company, ticker, shares, price, total value) with rows highlighted when Congress also bought the ticker in the same window, plus a correlations panel listing every ticker appearing in both datasets, most recent signal first |
 
 ### Activity Summary
 
@@ -99,7 +106,8 @@ Each alert includes an Altair line chart indexed to 100 at the date of the first
 congressional-trade-monitor/
 ├── config.py            # Watchlist, alert thresholds, email settings (safe to commit)
 ├── fetcher.py           # House + Senate data fetchers
-├── analyzer.py          # Cluster detection + win-rate leaderboard
+├── openinsider_fetcher.py # OpenInsider CEO/CFO open-market buy scraper (value + market-cap filtered)
+├── analyzer.py          # Cluster + cross-signal detection, win-rate leaderboard
 ├── committees.py        # Committee assignments + conflict detection (official gov sources)
 ├── notifier.py          # Email alert formatting and sending
 ├── monitor.py           # Main polling loop
@@ -136,12 +144,13 @@ Both are handled by a single `monitor.yml` workflow. The script checks the day o
 
 ## Data Sources
 
-All data comes directly from official U.S. government sources. No third-party APIs, no keys required, no paywalls.
+Congressional and committee data comes directly from official U.S. government sources; corporate insider buys come from OpenInsider (a free aggregator of SEC Form 4 filings). No paid APIs, no keys required, no paywalls.
 
-| Chamber | Source | Method |
-|---------|--------|--------|
+| Source | Endpoint | Method |
+|--------|----------|--------|
 | Senate | `efdsearch.senate.gov` | Session POST (CSRF + terms agreement) → HTML table parsing |
 | House | `disclosures-clerk.house.gov` | POST filing index → pdfplumber PDF parsing |
+| Corporate Insiders (CEO/CFO) | `openinsider.com` | Pre-filtered screener (open-market buys, CEO+CFO, 45 days) → HTML table parsing |
 | Committee Assignments | `clerk.house.gov/xml/lists/MemberData.xml` | XML parsing — House members + committee codes |
 | Committee Assignments | `senate.gov/general/committee_assignments/assignments.htm` | HTML parsing — Senate members + committees |
 
@@ -198,11 +207,38 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
 }
 ```
 
+### Insider extension & cross-signal detection
+`openinsider_fetcher.py` scrapes a pre-filtered OpenInsider screener (open-market purchases only, CEO + CFO titles, last 45 days) and parses the results HTML table into the same flat-dict shape used elsewhere, tagged with `"source": "insider"`:
+
+```python
+{
+    "source":           "insider",
+    "name":             "Andrew Anagnost",
+    "title":            "Pres, CEO",
+    "company":          "Autodesk, Inc.",
+    "ticker":           "ADSK",
+    "type":             "purchase",
+    "transaction_date": "2026-06-16",
+    "disclosure_date":  "2026-06-16",
+    "shares":           2460,
+    "price":            202.66,
+    "value":            498544.0,
+    "amount":           "+$498,544",
+    "ptr_link":         "https://openinsider.com/ADSK",
+}
+```
+
+**Noise filtering at the scraper boundary** (so analyzer, notifier, and dashboard all receive a clean list):
+- **Minimum trade value** — drops buys under `MIN_TRADE_VALUE` ($50k), removing micro-cap penny-stock noise.
+- **Minimum market cap** — the OpenInsider screener exposes no market-cap parameter, so market cap is looked up per unique ticker via yfinance and buys under `MIN_MARKET_CAP_M` ($300M, overridable via the `MIN_MARKET_CAP_M` env var) are dropped. Tickers with no market-cap data are kept, so a transient yfinance miss never silently discards a legitimate large-cap.
+
+**Cross-signal detection** (`find_cross_signals` / `detect_cross_cluster_alerts` in `analyzer.py`) groups congressional purchases and insider buys by ticker and fires a 🔗 alert when both appear on the same ticker within `CLUSTER_DAYS` (45). The alert email lists the congressional buys and the insider buys in separate tables and reports the days between the first and last signal. Existing congressional detectors and email templates are untouched — the cross-signal path is purely additive and runs alongside them in `monitor.poll()`.
+
 ### Win-Rate Calculation
 Uses yfinance to pull stock price on `transaction_date`, compares 30/60/90-day forward returns vs. SPY benchmark. A trade is a win if the member outperformed SPY. Minimum 10 scored trades required before a member qualifies for win-rate alerts.
 
 ### State management
-`seen_trades.json` tracks every trade that has already triggered an alert using a `representative|ticker|date|type` key. On each poll, only truly new trades fire alerts without duplicate emails.
+`seen_trades.json` tracks every trade that has already triggered an alert using a `representative|ticker|date|type` key. On each poll, only truly new trades fire alerts without duplicate emails. Cross-signal alerts dedupe against the same file using a `crosscluster|ticker|<participants>` key, so an overlap re-fires only when a new buyer joins it.
 
 ---
 
@@ -278,6 +314,8 @@ Credentials are stored in `.env`, NOT in source code.
    ALERT_EMAIL_SENDER=your_alert_account@gmail.com
    ALERT_EMAIL_PASSWORD=xxxx xxxx xxxx xxxx
    ALERT_EMAIL_RECIPIENTS=your_email@gmail.com
+   # Optional: minimum market cap (in $M) for OpenInsider CEO/CFO buys (default 300)
+   MIN_MARKET_CAP_M=300
    ```
 
 Test with: `python notifier.py`

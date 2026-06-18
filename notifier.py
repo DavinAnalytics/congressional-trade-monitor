@@ -430,6 +430,106 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
     return subject, text, html
 
 
+def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
+    """Format a 🔗 Cross-Cluster Alert — congressional + CEO/CFO buying the same ticker."""
+    ticker  = alert.ticker
+    congress = [t for t in alert.trades if t.get("source") != "insider"]
+    insider  = [t for t in alert.trades if t.get("source") == "insider"]
+
+    # Days between first and last signal across both groups.
+    dates = sorted(t["transaction_date"] for t in alert.trades)
+    span  = (datetime.strptime(dates[-1], "%Y-%m-%d") -
+             datetime.strptime(dates[0],  "%Y-%m-%d")).days
+
+    subject = f"🔗 CROSS-SIGNAL — Congress + insider buying {ticker}"
+
+    # ── Plain text ──
+    cong_lines = "\n".join(
+        f"  {t['representative']} | {t['transaction_date']} | {_fmt_amount(t['amount'])}"
+        for t in congress
+    )
+    ins_lines = "\n".join(
+        f"  {t['name']} ({t['title']}) | {t['transaction_date']} | {_fmt_amount(t['amount'])}"
+        for t in insider
+    )
+    text = (
+        f"CROSS-CLUSTER ALERT\n"
+        f"{'='*50}\n"
+        f"Ticker:    {ticker}\n"
+        f"Signal:    {len(congress)} congressional buy(s) + {len(insider)} CEO/CFO buy(s)\n"
+        f"Window:    {dates[0]} → {dates[-1]} ({span} days between first and last signal)\n\n"
+        f"Congressional buys:\n{cong_lines}\n\n"
+        f"Insider (CEO/CFO) buys:\n{ins_lines}\n\n"
+        f"Both Congress and company insiders are accumulating {ticker} at the same time."
+    )
+
+    # ── HTML ──
+    cong_rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:6px 12px;">{t['representative']}</td>
+          <td style="padding:6px 12px;">{t['transaction_date']}</td>
+          <td style="padding:6px 12px;">{_fmt_amount(t['amount'])}</td>
+          <td style="padding:6px 12px;"><a href="{t['ptr_link']}" style="color:#2563eb;">Filing ↗</a></td>
+        </tr>"""
+        for t in congress
+    )
+    ins_rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:6px 12px;">{t['name']}</td>
+          <td style="padding:6px 12px;">{t['title']}</td>
+          <td style="padding:6px 12px;">{t['transaction_date']}</td>
+          <td style="padding:6px 12px;font-weight:600;">{_fmt_amount(t['amount'])}</td>
+          <td style="padding:6px 12px;"><a href="{t['ptr_link']}" style="color:#2563eb;">Filing ↗</a></td>
+        </tr>"""
+        for t in insider
+    )
+
+    body = f"""
+      <p style="font-size:15px;color:#111;margin:0 0 16px;">
+        <strong>{ticker}</strong> is being bought by <strong>{len(congress)} member(s) of Congress</strong>
+        and <strong>{len(insider)} company insider(s) (CEO/CFO)</strong> within a
+        {config.CLUSTER_DAYS}-day window — a combined-conviction signal.
+      </p>
+      <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#374151;">Congressional buys</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:18px;">
+        <thead>
+          <tr style="background:#f3f4f6;text-align:left;">
+            <th style="padding:8px 12px;">Member</th>
+            <th style="padding:8px 12px;">Date</th>
+            <th style="padding:8px 12px;">Amount</th>
+            <th style="padding:8px 12px;">Filing</th>
+          </tr>
+        </thead>
+        <tbody>{cong_rows}</tbody>
+      </table>
+      <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#374151;">Insider (CEO/CFO) buys</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <thead>
+          <tr style="background:#f3f4f6;text-align:left;">
+            <th style="padding:8px 12px;">Insider</th>
+            <th style="padding:8px 12px;">Title</th>
+            <th style="padding:8px 12px;">Date</th>
+            <th style="padding:8px 12px;">Value</th>
+            <th style="padding:8px 12px;">Filing</th>
+          </tr>
+        </thead>
+        <tbody>{ins_rows}</tbody>
+      </table>
+      <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">
+        {span} days between first and last signal · Window: {config.CLUSTER_DAYS} days ·
+        Insider data from openinsider.com
+      </p>"""
+
+    html = _base_html(
+        title  = f"🔗 Cross-Signal — {ticker}",
+        accent = "#5b21b6",
+        body   = body,
+    )
+    return subject, text, html
+
+
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def send_alerts(alerts: list[Alert], win_rates: dict | None = None) -> None:
@@ -450,6 +550,8 @@ def send_alerts(alerts: list[Alert], win_rates: dict | None = None) -> None:
             subject, text, html = _format_winrate(alert, win_rates)
         elif alert.tier == "watchlist":
             subject, text, html = _format_watchlist(alert, win_rates)
+        elif alert.tier == "cross_cluster":
+            subject, text, html = _format_cross_cluster(alert)
         else:
             continue
 

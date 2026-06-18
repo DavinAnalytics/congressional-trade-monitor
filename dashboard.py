@@ -26,11 +26,13 @@ st.markdown(
 )
 
 from fetcher import fetch_all
+from openinsider_fetcher import fetch_all as fetch_insider
 from analyzer import (
     compute_win_rates,
     detect_cluster_alerts,
     detect_winrate_alerts,
     detect_watchlist_alerts,
+    find_cross_signals,
 )
 from committees import load_all, get_member_committees, flag_conflicts
 import config
@@ -55,6 +57,20 @@ def _filter_trades(days: int) -> list[dict]:
     cutoff = datetime.now() - timedelta(days=days)
     return [
         t for t in _fetch_trades_raw(MAX_DAYS)
+        if datetime.strptime(t["transaction_date"], "%Y-%m-%d") >= cutoff
+    ]
+
+
+@st.cache_data(ttl="1h")
+def _fetch_insider_raw() -> list[dict]:
+    # openinsider feed is fixed at the last 45 days; days window filters in memory.
+    return fetch_insider(days=MAX_DAYS)
+
+
+def _filter_insider(days: int) -> list[dict]:
+    cutoff = datetime.now() - timedelta(days=days)
+    return [
+        t for t in _fetch_insider_raw()
         if datetime.strptime(t["transaction_date"], "%Y-%m-%d") >= cutoff
     ]
 
@@ -532,6 +548,75 @@ def _render_leaderboard(win_rates: dict, days: int):
     )
 
 
+def _render_correlations(congress_trades: list[dict], insider_trades: list[dict], days: int):
+    """Panel of tickers bought by BOTH Congress and CEO/CFO insiders, most recent first."""
+    matches = find_cross_signals(congress_trades, insider_trades, window_days=days)
+    if not matches:
+        st.caption("No tickers currently bought by both Congress and CEO/CFO insiders in this window.")
+        return
+
+    rows = [
+        {
+            "Ticker": m["ticker"],
+            "Congress buys": len(m["congress"]),
+            "Insider buys": len(m["insider"]),
+            "Most recent signal": m["last"],
+            "Span (days)": m["span_days"],
+        }
+        for m in matches
+    ]
+    df = pd.DataFrame(rows).sort_values("Most recent signal", ascending=False)
+    st.dataframe(
+        df,
+        hide_index=True,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker"),
+            "Congress buys": st.column_config.NumberColumn("Congress buys"),
+            "Insider buys": st.column_config.NumberColumn("CEO/CFO buys"),
+            "Most recent signal": st.column_config.DateColumn("Most recent signal", format="MMM DD, YYYY"),
+            "Span (days)": st.column_config.NumberColumn("Span (days)"),
+        },
+    )
+
+
+def _render_insider(insider_trades: list[dict], congress_tickers: set[str]):
+    """CEO/CFO open-market buys table, highlighting tickers also bought by Congress."""
+    df = pd.DataFrame(insider_trades)
+    if df.empty:
+        st.info("No CEO/CFO open-market buys in the current window.")
+        return
+
+    df = df[["transaction_date", "name", "title", "company", "ticker", "shares", "price", "value"]].copy()
+    df["transaction_date"] = pd.to_datetime(df["transaction_date"])
+    df = df.sort_values("transaction_date", ascending=False)
+
+    overlap = df["ticker"].str.upper().isin(congress_tickers)
+    st.caption(
+        f"{len(df)} CEO/CFO open-market buy(s) — "
+        f"{int(overlap.sum())} also bought by Congress in this window (highlighted)"
+    )
+
+    def _highlight(row):
+        hit = row["ticker"].upper() in congress_tickers
+        return ["background-color: #fef3c7" if hit else ""] * len(row)
+
+    styled = df.style.apply(_highlight, axis=1)
+    st.dataframe(
+        styled,
+        hide_index=True,
+        column_config={
+            "transaction_date": st.column_config.DateColumn("Date", format="MMM DD, YYYY"),
+            "name": st.column_config.TextColumn("Insider", pinned=True),
+            "title": st.column_config.TextColumn("Title"),
+            "company": st.column_config.TextColumn("Company"),
+            "ticker": st.column_config.TextColumn("Ticker"),
+            "shares": st.column_config.NumberColumn("Shares", format="localized"),
+            "price": st.column_config.NumberColumn("Price", format="dollar"),
+            "value": st.column_config.NumberColumn("Total Value", format="dollar"),
+        },
+    )
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -555,10 +640,15 @@ with _loading_slot.status("Loading congressional trade data...", expanded=True) 
     st.write("Detecting cluster, win-rate, and watchlist alerts...")
     alerts = _get_alerts(days)
 
+    st.write("Fetching CEO/CFO insider buys (openinsider)...")
+    _fetch_insider_raw()
+
     _status.update(label="Data loaded", state="complete", expanded=False)
 _loading_slot.empty()
 
 trades = _filter_trades(days)
+insider_trades = _filter_insider(days)
+congress_buy_tickers = {t["ticker"].upper() for t in trades if t["type"] == "purchase"}
 
 cluster_alerts = [a for a in alerts if a.tier == "cluster"]
 winrate_alerts = [a for a in alerts if a.tier == "winrate"]
@@ -577,6 +667,7 @@ with st.container(horizontal=True):
     st.metric("⚡ Cluster Alerts", len(cluster_alerts), border=True)
     st.metric("🏆 Win-Rate Alerts", len(winrate_alerts), border=True)
     st.metric("👁️ Watchlist Alerts", len(watchlist_alerts), border=True)
+    st.metric("🏢 CEO/CFO Buys", len(insider_trades), border=True)
 
 st.space("small")
 
@@ -584,8 +675,8 @@ _render_summary(trades)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-tab_alerts, tab_trades, tab_leaderboard = st.tabs(
-    ["🔔 Alerts", "📋 Trades", "🏆 Leaderboard"],
+tab_alerts, tab_trades, tab_leaderboard, tab_insider = st.tabs(
+    ["🔔 Alerts", "📋 Trades", "🏆 Leaderboard", "🏢 Insider Buys"],
     on_change="rerun",
 )
 
@@ -600,3 +691,13 @@ if tab_trades.open:
 if tab_leaderboard.open:
     with tab_leaderboard:
         _render_leaderboard(win_rates, days)
+
+if tab_insider.open:
+    with tab_insider:
+        st.subheader("🔗 Congress + Insider Correlations", divider="gray")
+        with st.container(border=True):
+            st.markdown("**Tickers bought by both Congress and CEO/CFO insiders** (most recent first)")
+            _render_correlations(trades, insider_trades, days)
+        st.space("small")
+        st.subheader("🏢 CEO/CFO Open-Market Buys", divider="gray")
+        _render_insider(insider_trades, congress_buy_tickers)

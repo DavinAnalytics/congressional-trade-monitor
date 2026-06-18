@@ -17,10 +17,11 @@ import argparse
 from datetime import datetime, timedelta
 
 import config
-from fetcher     import fetch_all
-from analyzer    import analyze, compute_win_rates, filter_new_trades
-from notifier    import send_alerts, send_summary
-from committees  import load_all as load_committees
+from fetcher            import fetch_all
+from openinsider_fetcher import fetch_all as fetch_insider
+from analyzer           import analyze, analyze_cross_cluster, compute_win_rates, filter_new_trades
+from notifier           import send_alerts, send_summary
+from committees         import load_all as load_committees
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,19 +72,29 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     else:
         recent = all_trades
 
+    # Fetch insider (CEO/CFO) open-market buys for cross-cluster detection
+    print("\nFetching insider buys...")
+    insider_trades = fetch_insider(days=config.FETCH_DAYS)
+
     # Analyze
     print("\nAnalyzing...")
     alerts = analyze(recent)
+
+    # 🔗 Cross-cluster — tickers bought by both Congress and a CEO/CFO
+    print("\nDetecting cross-cluster alerts...")
+    cross_alerts = analyze_cross_cluster(recent, insider_trades)
+
+    all_alerts = alerts + cross_alerts
 
     # Win rates (for notifier formatting)
     win_rates = compute_win_rates(all_trades)
 
     # Send alerts
     print("\nSending alerts...")
-    send_alerts(alerts, win_rates)
+    send_alerts(all_alerts, win_rates)
 
-    _banner(f"Poll complete — {len(alerts)} alert(s) — {_now()}")
-    return alerts, all_trades, win_rates
+    _banner(f"Poll complete — {len(all_alerts)} alert(s) — {_now()}")
+    return all_alerts, all_trades, win_rates
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
