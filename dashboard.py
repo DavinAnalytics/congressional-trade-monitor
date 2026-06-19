@@ -112,7 +112,7 @@ def _get_price_history(ticker: str, start_date: str) -> pd.DataFrame:
     with contextlib.redirect_stderr(_io.StringIO()):
         try:
             logging.disable(logging.CRITICAL)
-            raw = yf.download(tickers, start=start_date, progress=False, auto_adjust=True)
+            raw = yf.download(tickers, start=start_date, interval="1d", progress=False, auto_adjust=True)
             logging.disable(logging.NOTSET)
         except Exception:
             return pd.DataFrame()
@@ -121,9 +121,14 @@ def _get_price_history(ticker: str, start_date: str) -> pd.DataFrame:
     close = raw["Close"]
     if isinstance(close, pd.Series):
         close = close.to_frame(name=ticker)
-    close = close.dropna(how="all")
+    # Keep only dates where BOTH series have a close, so the ticker and SPY lines
+    # span the same range (smaller/foreign tickers can lag SPY by a day on yfinance).
+    close = close.dropna(how="any")
     if close.empty:
         return pd.DataFrame()
+    # Strip timezone and time-of-day so Altair renders clean date-only x-axis ticks
+    close.index = pd.DatetimeIndex([d.date() for d in close.index])
+    close.index.name = "Date"
     return (close / close.iloc[0] * 100).reset_index()
 
 
@@ -338,6 +343,49 @@ def _fmt_type(tx_type: str) -> str:
     return tx_type.replace("_", " ").title()
 
 
+def _render_price_chart(ticker: str, start_date: str, caption: str):
+    """Altair line chart of ticker vs SPY since start_date, indexed to 100. Shared by alerts and insider buys."""
+    hist = _get_price_history(ticker, start_date)
+    if hist.empty:
+        return
+    hist_long = hist.melt(id_vars="Date", var_name="Symbol", value_name="Value")
+    y_min = hist_long["Value"].min()
+    y_max = hist_long["Value"].max()
+    pad = max((y_max - y_min) * 0.2, 1.5)
+    chart = (
+        alt.Chart(hist_long)
+        .mark_line(strokeWidth=2)
+        .encode(
+            x=alt.X(
+                "Date:T",
+                title=None,
+                axis=alt.Axis(tickCount={"interval": "day", "step": 1}, format="%b %d"),
+            ),
+            y=alt.Y(
+                "Value:Q",
+                scale=alt.Scale(domain=[y_min - pad, y_max + pad]),
+                title="Indexed to 100 at first trade",
+            ),
+            color=alt.Color(
+                "Symbol:N",
+                scale=alt.Scale(
+                    domain=[ticker, "SPY"],
+                    range=["#3a86ff", "#e63946"],
+                ),
+                legend=alt.Legend(orient="bottom"),
+            ),
+            tooltip=[
+                alt.Tooltip("Date:T", title="Date"),
+                alt.Tooltip("Symbol:N", title="Symbol"),
+                alt.Tooltip("Value:Q", format=".1f", title="Value"),
+            ],
+        )
+        .properties(height=320, width="container")
+    )
+    st.caption(caption)
+    st.altair_chart(chart)
+
+
 def _render_alerts(alerts: list, win_rates: dict):
     if not alerts:
         st.info("No alerts in the current window.", icon=":material/check_circle:")
@@ -394,40 +442,11 @@ def _render_alerts(alerts: list, win_rates: dict):
             st.caption(f"Detected: {alert.fired_at[:16]}")
 
             earliest = min(t["transaction_date"] for t in alert.trades)
-            hist = _get_price_history(alert.ticker, earliest)
-            if not hist.empty:
-                hist_long = hist.melt(id_vars="Date", var_name="Symbol", value_name="Value")
-                y_min = hist_long["Value"].min()
-                y_max = hist_long["Value"].max()
-                pad = max((y_max - y_min) * 0.2, 1.5)
-                chart = (
-                    alt.Chart(hist_long)
-                    .mark_line(strokeWidth=2)
-                    .encode(
-                        x=alt.X("Date:T", title=None),
-                        y=alt.Y(
-                            "Value:Q",
-                            scale=alt.Scale(domain=[y_min - pad, y_max + pad]),
-                            title="Indexed to 100 at first trade",
-                        ),
-                        color=alt.Color(
-                            "Symbol:N",
-                            scale=alt.Scale(
-                                domain=[alert.ticker, "SPY"],
-                                range=["#3a86ff", "#e63946"],
-                            ),
-                            legend=alt.Legend(orient="bottom"),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("Date:T", title="Date"),
-                            alt.Tooltip("Symbol:N", title="Symbol"),
-                            alt.Tooltip("Value:Q", format=".1f", title="Value"),
-                        ],
-                    )
-                    .properties(height=320, width="container")
-                )
-                st.caption(f"Price performance since first trade ({earliest}) — indexed to 100 at open")
-                st.altair_chart(chart)
+            _render_price_chart(
+                alert.ticker,
+                earliest,
+                f"Price performance since first trade ({earliest}) — indexed to 100 at open",
+            )
 
 
 def _render_trades(trades: list[dict], days: int, win_rates: dict):
@@ -586,9 +605,9 @@ def _render_insider(insider_trades: list[dict], congress_tickers: set[str]):
         st.info("No CEO/CFO open-market buys in the current window.")
         return
 
-    df = df[["transaction_date", "name", "title", "company", "ticker", "shares", "price", "value"]].copy()
+    df = df[["transaction_date", "name", "title", "company", "ticker", "value", "shares", "price"]].copy()
     df["transaction_date"] = pd.to_datetime(df["transaction_date"])
-    df = df.sort_values("transaction_date", ascending=False)
+    df = df.sort_values("value", ascending=False)
 
     overlap = df["ticker"].str.upper().isin(congress_tickers)
     st.caption(
@@ -610,11 +629,41 @@ def _render_insider(insider_trades: list[dict], congress_tickers: set[str]):
             "title": st.column_config.TextColumn("Title"),
             "company": st.column_config.TextColumn("Company"),
             "ticker": st.column_config.TextColumn("Ticker"),
+            "value": st.column_config.NumberColumn("Total Value", format="dollar"),
             "shares": st.column_config.NumberColumn("Shares", format="localized"),
             "price": st.column_config.NumberColumn("Price", format="dollar"),
-            "value": st.column_config.NumberColumn("Total Value", format="dollar"),
         },
     )
+
+
+def _render_top_insider_charts(insider_trades: list[dict]):
+    """For the 5 largest CEO/CFO buys, chart price vs SPY since the buy — same format as alerts."""
+    top5 = sorted(insider_trades, key=lambda t: t["value"], reverse=True)[:5]
+    if not top5:
+        return
+
+    for t in top5:
+        company = _get_company_name(t["ticker"])
+        label = f"{company} ({t['ticker']})" if company != t["ticker"] else t["ticker"]
+        with st.container(border=True):
+            st.markdown(
+                f'<div style="background:#16a34a;padding:10px 16px;border-radius:6px;margin-bottom:4px;">'
+                f'<span style="color:white;font-size:1.15em;font-weight:700;">🏢 {label} — {_fmt_dollars(t["value"])}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"{t['name']} ({t['title']}) · bought {t['shares']:,} @ ${t['price']} on {t['transaction_date']}"
+            )
+            st.link_button(
+                f"📈 {label} on TradingView",
+                f"https://www.tradingview.com/chart/?symbol={t['ticker']}",
+            )
+            _render_price_chart(
+                t["ticker"],
+                t["transaction_date"],
+                f"Price performance since buy ({t['transaction_date']}) — indexed to 100 at open",
+            )
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -701,3 +750,6 @@ if tab_insider.open:
         st.space("small")
         st.subheader("🏢 CEO/CFO Open-Market Buys", divider="gray")
         _render_insider(insider_trades, congress_buy_tickers)
+        st.space("small")
+        st.markdown("#### 📈 Top 5 Buys — Performance vs SPY Since Purchase")
+        _render_top_insider_charts(insider_trades)

@@ -74,7 +74,7 @@ python -m streamlit run dashboard.py
 | 🔔 Alerts | All fired alerts with colored buy/sell header, trades table, win rate, committee assignments, Altair price chart vs SPY, TradingView link |
 | 📋 Trades | Full trade log filterable by sector and type; win rate progress bar; committee column; click any row for member detail modal |
 | 🏆 Leaderboard | Win rate rankings; click any row for member detail modal |
-| 🏢 Insider Buys | CEO/CFO open-market buys (date, name, title, company, ticker, shares, price, total value) with rows highlighted when Congress also bought the ticker in the same window, plus a correlations panel listing every ticker appearing in both datasets, most recent signal first |
+| 🏢 Insider Buys | CEO/CFO open-market buys (date, name, title, company, ticker, total value, shares, price), sorted by total value descending, with rows highlighted when Congress also bought the ticker in the same window; a correlations panel listing every ticker appearing in both datasets (most recent signal first); and a **Top 5 Buys** section charting each of the five largest buys vs SPY since the purchase date |
 
 ### Activity Summary
 
@@ -96,7 +96,9 @@ Trade data and win rates are cached for 1 hour. The days slider, sector, and typ
 
 ### Price Performance Charts
 
-Each alert includes an Altair line chart indexed to 100 at the date of the first trade in the alert window, comparing the stock (blue, `#3a86ff`) vs SPY (red, `#e63946`). Y-axis is zoomed to the actual data range so small divergences are visible.
+The Alerts tab and the Insider Buys "Top 5" section share a single chart renderer (`_render_price_chart`), so both look identical: an Altair line chart indexed to 100 at the start date (the first trade in the alert window, or the insider's purchase date), comparing the stock (blue, `#3a86ff`) vs SPY (red, `#e63946`). Y-axis is zoomed to the actual data range so small divergences are visible.
+
+Price history (`_get_price_history`) is fetched from yfinance at daily granularity (`interval="1d"`) and the index is reduced to bare dates, so the x-axis shows one clean tick per day (`Jun 11`, `Jun 12`, …) with no intraday "12 PM" labels even on very short windows. Only dates where **both** the ticker and SPY have a posted close are plotted, so the two lines always span the same range — smaller or foreign tickers that lag SPY by a day on yfinance no longer leave one line trailing past the other.
 
 ---
 
