@@ -608,6 +608,8 @@ def _render_insider(insider_trades: list[dict], congress_tickers: set[str]):
     df = df[["transaction_date", "name", "title", "company", "ticker", "value", "shares", "price"]].copy()
     df["transaction_date"] = pd.to_datetime(df["transaction_date"])
     df = df.sort_values("value", ascending=False)
+    df["ticker_url"] = df["ticker"].apply(lambda t: f"https://www.tradingview.com/chart/?symbol={t}")
+    df = df[["transaction_date", "name", "title", "company", "ticker", "ticker_url", "value", "shares", "price"]]
 
     overlap = df["ticker"].str.upper().isin(congress_tickers)
     st.caption(
@@ -628,7 +630,8 @@ def _render_insider(insider_trades: list[dict], congress_tickers: set[str]):
             "name": st.column_config.TextColumn("Insider", pinned=True),
             "title": st.column_config.TextColumn("Title"),
             "company": st.column_config.TextColumn("Company"),
-            "ticker": st.column_config.TextColumn("Ticker"),
+            "ticker": None,
+            "ticker_url": st.column_config.LinkColumn("Ticker", display_text=r"symbol=(.+)"),
             "value": st.column_config.NumberColumn("Total Value", format="dollar"),
             "shares": st.column_config.NumberColumn("Shares", format="localized"),
             "price": st.column_config.NumberColumn("Price", format="dollar"),
