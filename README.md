@@ -2,7 +2,7 @@
 **Author:** Davin Kim  
 **Status:** ✅ Complete - all modules built and tested  
 **Live dashboard:** https://congressional-trade-monitor.streamlit.app/  
-**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair  
+**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.0 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider (CEO/CFO) open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
 
 ---
@@ -21,10 +21,10 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 
 | Tier | Signal | Trigger |
 |------|--------|---------|
-| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal |
+| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal; email includes Gemini AI context explaining why the cluster may be forming |
 | 🏆 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
 | 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
-| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal |
+| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal; email includes Gemini AI context |
 
 Alert header color in the dashboard and email reflects trade direction: **green** for net buy activity, **red** for net sell activity — independent of tier.
 
@@ -134,13 +134,40 @@ The monitor runs automatically on GitHub's servers, allowing it to run without t
 | Day | Schedule | What it does |
 |-----|----------|--------------|
 | Monday – Saturday | 6:00 AM PST | Fetches both chambers, detects signals, emails alerts for new trades |
-| Sunday | 6:00 AM PST | Sends a weekly digest of all alerts and trade activity |
+| Sunday | 6:00 AM PST | Sends a weekly digest: sector accumulation vs distribution table, top signals of the week, and Gemini-grounded legislative intelligence |
 
 Both are handled by a single `monitor.yml` workflow. The script checks the day of week and runs `--once` or `--summary` accordingly.
 
 **State persistence:** `seen_trades.json` is stored in a private GitHub Gist between runs so duplicate alerts are never sent. Each run loads the Gist at start and saves back on completion.
 
 **Manual trigger:** The workflow has a `workflow_dispatch` trigger. You can run it on demand from the GitHub Actions tab at any time.
+
+---
+
+## AI-Powered Features (Gemini 2.0 Flash)
+
+All AI features use Google Search grounding, so Gemini pulls real-time search results rather than relying on training data. Every feature degrades gracefully — if `GEMINI_API_KEY` is not set, the email still sends with all deterministic content intact and the AI blocks are simply omitted.
+
+### Alert Context (Cluster + Cross-Signal emails)
+
+When a cluster or cross-cluster alert fires, `generate_alert_context()` in `notifier.py` makes one grounded Gemini call asking why the signal might be forming right now. The response (2–3 sentences) appears in the email as a blue **"AI Context · Gemini + Google Search"** block:
+
+> *"Jensen Huang testified before the Senate Commerce Committee on AI export controls on June 17. The Semiconductor Export Reform Act cleared committee markup June 18. Two of the three congressional buyers sit on Science & Technology subcommittees with direct chip-policy authority."*
+
+**Cost:** ~$0.035 per alert (Google Search grounding). Free tier covers 1,500 grounded calls/day — well within limits for personal use.
+
+### Weekly Digest (Sunday email)
+
+The Sunday digest is rebuilt from a sparse alert list into a four-section intelligence report:
+
+| Section | Source |
+|---------|--------|
+| Stats (Trades / Alerts / Sectors Active) | Deterministic |
+| **Sector Activity table** — buy count, sell count, net ▲▼ per sector | Deterministic from `config.SECTOR_TICKERS` |
+| **Strongest Signals** — top 5 alerts with color-coded tier badges | From `alerts` list |
+| **Legislative Intelligence** — 3–4 grounded bullet points on bills/regulatory actions that advanced this week and their sector implications | `generate_weekly_intelligence()` → Gemini + Google Search |
+
+**Cost:** 1 grounded call per Sunday ≈ $0.035/week ≈ $1.82/year.
 
 ---
 
@@ -316,9 +343,11 @@ Credentials are stored in `.env`, NOT in source code.
    ALERT_EMAIL_SENDER=your_alert_account@gmail.com
    ALERT_EMAIL_PASSWORD=xxxx xxxx xxxx xxxx
    ALERT_EMAIL_RECIPIENTS=your_email@gmail.com
+   GEMINI_API_KEY=your_gemini_api_key   # optional — get one free at aistudio.google.com
    # Optional: minimum market cap (in $M) for OpenInsider CEO/CFO buys (default 300)
    MIN_MARKET_CAP_M=300
    ```
+   For GitHub Actions, also add `GEMINI_API_KEY` as a repository secret (Settings → Secrets and variables → Actions).
 
 Test with: `python notifier.py`
 

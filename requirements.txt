@@ -4,3 +4,4 @@ pdfplumber
 yfinance
 python-dotenv
 streamlit
+google-genai

@@ -12,6 +12,7 @@ Public interface:
   send_summary(alerts, trades) -> None  (daily digest, optional)
 """
 
+import os
 import re
 import smtplib
 import traceback
@@ -137,6 +138,37 @@ def _base_html(title: str, accent: str, body: str) -> str:
 </html>"""
 
 
+# ── AI context ────────────────────────────────────────────────────────────────
+
+def generate_alert_context(ticker: str, members: list[str], direction: str) -> str | None:
+    """Call Gemini with Google Search grounding to explain why a cluster formed."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        names = ", ".join(members[:3]) + ("..." if len(members) > 3 else "")
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=(
+                f"In 2–3 sentences, explain what is happening right now with {ticker} stock "
+                f"that might explain why {len(members)} members of Congress ({names}) are "
+                f"{direction} it. Focus on recent news, earnings, legislation, or regulatory "
+                f"developments. Be specific and factual."
+            ),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                max_output_tokens=150,
+            ),
+        )
+        return response.text.strip() if response.text else None
+    except Exception as e:
+        print(f"  ⚠ Gemini context: {e}")
+        return None
+
+
 # ── Alert formatters ──────────────────────────────────────────────────────────
 
 def _format_cluster(alert: Alert) -> tuple[str, str, str]:
@@ -146,8 +178,11 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
     direction = "buying" if alert.trades[0]["type"] == "purchase" else "selling"
     dates    = sorted(t["transaction_date"] for t in alert.trades)
 
+    context = generate_alert_context(alert.ticker, members, direction)
+
     subject = f"⚡ CLUSTER ALERT — {n} members {direction} {alert.ticker}"
 
+    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
     text = (
         f"CLUSTER ALERT\n"
         f"{'='*50}\n"
@@ -157,7 +192,18 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
         f"Members:   {', '.join(members)}\n\n"
         f"Trades:\n{_trade_rows_text(alert.trades)}\n\n"
         f"This is a Tier 1 signal — strongest alert in the system."
+        f"{context_text}"
     )
+
+    context_html = ""
+    if context:
+        context_html = f"""
+      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
+                  border-left:4px solid #3b82f6;">
+        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
+                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{context}</p>
+      </div>"""
 
     table_rows = _trade_rows_html(alert.trades)
     body = f"""
@@ -181,7 +227,7 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
       </table>
       <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">
         Cluster window: {config.CLUSTER_DAYS} days · Minimum members: {config.CLUSTER_MIN_MEMBERS}
-      </p>"""
+      </p>{context_html}"""
 
     html = _base_html(
         title  = f"⚡ Cluster — {alert.ticker}",
@@ -441,6 +487,9 @@ def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
     span  = (datetime.strptime(dates[-1], "%Y-%m-%d") -
              datetime.strptime(dates[0],  "%Y-%m-%d")).days
 
+    cong_members = sorted({t["representative"] for t in congress})
+    context = generate_alert_context(ticker, cong_members, "buying")
+
     subject = f"🔗 CROSS-SIGNAL — Congress + insider buying {ticker}"
 
     # ── Plain text ──
@@ -452,6 +501,7 @@ def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
         f"  {t['name']} ({t['title']}) | {t['transaction_date']} | {_fmt_amount(t['amount'])}"
         for t in insider
     )
+    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
     text = (
         f"CROSS-CLUSTER ALERT\n"
         f"{'='*50}\n"
@@ -461,7 +511,18 @@ def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
         f"Congressional buys:\n{cong_lines}\n\n"
         f"Insider (CEO/CFO) buys:\n{ins_lines}\n\n"
         f"Both Congress and company insiders are accumulating {ticker} at the same time."
+        f"{context_text}"
     )
+
+    context_html = ""
+    if context:
+        context_html = f"""
+      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
+                  border-left:4px solid #3b82f6;">
+        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
+                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{context}</p>
+      </div>"""
 
     # ── HTML ──
     cong_rows = "".join(
@@ -520,7 +581,7 @@ def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
       <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">
         {span} days between first and last signal · Window: {config.CLUSTER_DAYS} days ·
         Insider data from openinsider.com
-      </p>"""
+      </p>{context_html}"""
 
     html = _base_html(
         title  = f"🔗 Cross-Signal — {ticker}",
@@ -558,61 +619,196 @@ def send_alerts(alerts: list[Alert], win_rates: dict | None = None) -> None:
         _send_email(subject, text, html)
 
 
+def _sector_net_activity(trades: list[dict]) -> list[tuple[str, int, int]]:
+    """Map trades to sectors; return (sector, buy_count, sell_count) sorted by net buys."""
+    ticker_sector: dict[str, str] = {}
+    for sector, tickers in config.SECTOR_TICKERS.items():
+        for t in tickers:
+            ticker_sector[t.upper()] = sector
+
+    buys: dict[str, int] = {}
+    sells: dict[str, int] = {}
+    for trade in trades:
+        sector = ticker_sector.get(trade["ticker"].upper())
+        if not sector:
+            continue
+        if trade["type"] == "purchase":
+            buys[sector] = buys.get(sector, 0) + 1
+        else:
+            sells[sector] = sells.get(sector, 0) + 1
+
+    all_sectors = set(buys) | set(sells)
+    result = [(s, buys.get(s, 0), sells.get(s, 0)) for s in all_sectors]
+    result.sort(key=lambda x: x[1] - x[2], reverse=True)
+    return result
+
+
+def generate_weekly_intelligence(
+    sector_activity: list[tuple[str, int, int]],
+) -> str | None:
+    """One Gemini grounded call for weekly legislative + regulatory intelligence."""
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+
+        top_accumulated = [s for s, b, sl in sector_activity if b > sl][:3]
+        top_distributed = [s for s, b, sl in sector_activity if sl > b][:2]
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=(
+                f"Today is {datetime.now().strftime('%B %d, %Y')}. "
+                f"US congressional trading this week shows accumulation in: "
+                f"{', '.join(top_accumulated) or 'mixed sectors'}. "
+                f"Distribution in: {', '.join(top_distributed) or 'none notable'}. "
+                f"In 3–4 bullet points, summarize what US legislation or regulatory actions "
+                f"advanced this week that could explain or relate to this trading activity. "
+                f"Name specific bills, agencies, and companies where possible. "
+                f"If nothing notable, say so briefly."
+            ),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                max_output_tokens=300,
+            ),
+        )
+        return response.text.strip() if response.text else None
+    except Exception as e:
+        print(f"  ⚠ Gemini weekly intelligence: {e}")
+        return None
+
+
 def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
     """
-    Send a weekly digest email summarizing all alerts and trade activity.
-    Runs every Sunday at 6 AM PST via GitHub Actions.
+    Send the weekly Sunday digest email.
+    Sections: sector activity, strongest signals, legislative intelligence (Gemini).
     """
-    now     = datetime.now().strftime("%B %d, %Y")
-    n_alert = len(alerts)
-    n_trade = len(trades)
-    chambers = {t["chamber"] for t in trades}
+    now      = datetime.now().strftime("%B %d, %Y")
+    n_alert  = len(alerts)
+    n_trade  = len(trades)
+    chambers = sorted({t["chamber"] for t in trades})
+
+    sector_activity  = _sector_net_activity(trades)
+    legislative_text = generate_weekly_intelligence(sector_activity)
 
     subject = f"📊 Weekly Digest — {now} · {n_alert} alert(s), {n_trade} trade(s)"
 
-    # Plain text
+    # ── Plain text ──────────────────────────────────────────────────────────────
     text_lines = [
-        f"CONGRESSIONAL TRADE MONITOR — Weekly Digest",
-        f"{now}",
-        f"{'='*50}",
-        f"Trades fetched:  {n_trade} ({', '.join(sorted(chambers))})",
-        f"Alerts fired:    {n_alert}",
+        "CONGRESSIONAL TRADE MONITOR — Weekly Digest",
+        now,
+        "=" * 50,
+        f"Trades:  {n_trade} ({', '.join(chambers)})",
+        f"Alerts:  {n_alert}",
         "",
+        "── Sector Activity ──",
     ]
+    for sector, buys, sells in sector_activity:
+        net   = buys - sells
+        arrow = f"▲{net}" if net > 0 else (f"▼{abs(net)}" if net < 0 else "=")
+        text_lines.append(f"  {sector:<20} {buys} buys  {sells} sells  {arrow}")
+
+    text_lines += ["", "── Strongest Signals ──"]
+    tier_labels = {"cluster": "CLUSTER", "cross_cluster": "CROSS", "winrate": "WIN-RATE", "watchlist": "WATCHLIST"}
     if alerts:
-        text_lines.append("Alerts this week:")
-        for a in alerts:
-            text_lines.append(f"  {a.message}")
+        for a in alerts[:5]:
+            label = tier_labels.get(a.tier, a.tier.upper())
+            text_lines.append(f"  [{label}] {a.ticker}: {a.message.splitlines()[0]}")
     else:
-        text_lines.append("No alerts fired this week.")
+        text_lines.append("  No alerts this week.")
+
+    if legislative_text:
+        text_lines += ["", "── Legislative Intelligence (Gemini) ──", legislative_text]
+
     text = "\n".join(text_lines)
 
-    # HTML
-    alert_items = ""
+    # ── HTML ────────────────────────────────────────────────────────────────────
+    sector_rows = ""
+    for sector, buys, sells in sector_activity:
+        net = buys - sells
+        if net > 0:
+            net_html = f'<span style="color:#16a34a;font-weight:600;">▲ {net}</span>'
+        elif net < 0:
+            net_html = f'<span style="color:#dc2626;font-weight:600;">▼ {abs(net)}</span>'
+        else:
+            net_html = '<span style="color:#9ca3af;">—</span>'
+        sector_rows += f"""
+        <tr style="border-bottom:1px solid #f3f4f6;">
+          <td style="padding:7px 12px;font-size:13px;">{sector}</td>
+          <td style="padding:7px 12px;font-size:13px;text-align:center;color:#16a34a;">{buys}</td>
+          <td style="padding:7px 12px;font-size:13px;text-align:center;color:#dc2626;">{sells}</td>
+          <td style="padding:7px 12px;font-size:13px;text-align:center;">{net_html}</td>
+        </tr>"""
+
+    tier_colors = {
+        "cluster":       ("#dc2626", "#fee2e2"),
+        "cross_cluster": ("#7c3aed", "#ede9fe"),
+        "winrate":       ("#d97706", "#fef3c7"),
+        "watchlist":     ("#16a34a", "#dcfce7"),
+    }
+    signal_items = ""
     if alerts:
-        for a in alerts:
-            color = "#6b7280"
-            alert_items += f"""
-            <li style="margin:8px 0;padding:10px 14px;background:#f9fafb;
-                        border-left:3px solid {color};border-radius:4px;font-size:14px;">
-              {a.message.replace(chr(10), '<br>')}
-            </li>"""
+        for a in alerts[:5]:
+            fg, bg = tier_colors.get(a.tier, ("#6b7280", "#f3f4f6"))
+            label  = tier_labels.get(a.tier, a.tier.upper())
+            first_line = a.message.splitlines()[0]
+            signal_items += f"""
+        <li style="margin:6px 0;padding:10px 14px;background:#f9fafb;border-radius:6px;
+                   font-size:13px;display:flex;align-items:center;gap:10px;">
+          <span style="background:{bg};color:{fg};font-size:10px;font-weight:700;
+                       padding:2px 7px;border-radius:4px;white-space:nowrap;">{label}</span>
+          <span>{first_line}</span>
+        </li>"""
     else:
-        alert_items = '<li style="color:#6b7280;font-size:14px;">No alerts this week.</li>'
+        signal_items = '<li style="color:#6b7280;font-size:13px;padding:8px 0;">No alerts this week.</li>'
+
+    if legislative_text:
+        formatted = legislative_text.replace("\n", "<br>")
+        legislative_html = f"""
+      <h2 style="font-size:14px;font-weight:600;color:#111;margin:24px 0 10px;">Legislative Intelligence</h2>
+      <div style="padding:14px 16px;background:#eff6ff;border-radius:6px;border-left:4px solid #3b82f6;">
+        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
+                  text-transform:uppercase;letter-spacing:.06em;">Gemini + Google Search</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.6;">{formatted}</p>
+      </div>"""
+    else:
+        legislative_html = ""
 
     body = f"""
-      <div style="display:flex;gap:24px;margin-bottom:20px;">
-        <div style="flex:1;padding:16px;background:#f3f4f6;border-radius:6px;text-align:center;">
-          <p style="margin:0;font-size:28px;font-weight:700;color:#111;">{n_trade}</p>
-          <p style="margin:4px 0 0;font-size:12px;color:#6b7280;text-transform:uppercase;">Trades</p>
+      <div style="display:flex;gap:16px;margin-bottom:20px;">
+        <div style="flex:1;padding:14px;background:#f3f4f6;border-radius:6px;text-align:center;">
+          <p style="margin:0;font-size:26px;font-weight:700;color:#111;">{n_trade}</p>
+          <p style="margin:4px 0 0;font-size:11px;color:#6b7280;text-transform:uppercase;">Trades</p>
         </div>
-        <div style="flex:1;padding:16px;background:#f3f4f6;border-radius:6px;text-align:center;">
-          <p style="margin:0;font-size:28px;font-weight:700;color:#111;">{n_alert}</p>
-          <p style="margin:4px 0 0;font-size:12px;color:#6b7280;text-transform:uppercase;">Alerts</p>
+        <div style="flex:1;padding:14px;background:#f3f4f6;border-radius:6px;text-align:center;">
+          <p style="margin:0;font-size:26px;font-weight:700;color:#111;">{n_alert}</p>
+          <p style="margin:4px 0 0;font-size:11px;color:#6b7280;text-transform:uppercase;">Alerts</p>
+        </div>
+        <div style="flex:1;padding:14px;background:#f3f4f6;border-radius:6px;text-align:center;">
+          <p style="margin:0;font-size:26px;font-weight:700;color:#111;">{len(sector_activity)}</p>
+          <p style="margin:4px 0 0;font-size:11px;color:#6b7280;text-transform:uppercase;">Sectors Active</p>
         </div>
       </div>
-      <h2 style="font-size:15px;font-weight:600;color:#111;margin:0 0 12px;">Alerts This Week</h2>
-      <ul style="list-style:none;margin:0;padding:0;">{alert_items}</ul>"""
+
+      <h2 style="font-size:14px;font-weight:600;color:#111;margin:0 0 10px;">Sector Activity</h2>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+        <thead>
+          <tr style="background:#f3f4f6;text-align:left;">
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#374151;">Sector</th>
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#16a34a;text-align:center;">Buys</th>
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#dc2626;text-align:center;">Sells</th>
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#374151;text-align:center;">Net</th>
+          </tr>
+        </thead>
+        <tbody>{sector_rows}</tbody>
+      </table>
+
+      <h2 style="font-size:14px;font-weight:600;color:#111;margin:0 0 10px;">Strongest Signals</h2>
+      <ul style="list-style:none;margin:0 0 4px;padding:0;">{signal_items}</ul>
+      {legislative_html}"""
 
     html = _base_html(
         title  = f"Weekly Digest — {now}",

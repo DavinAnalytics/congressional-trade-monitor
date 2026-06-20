@@ -35,6 +35,7 @@ jobs:
           ALERT_EMAIL_RECIPIENTS: ${{ secrets.ALERT_EMAIL_RECIPIENTS }}
           GIST_ID:                ${{ secrets.GIST_ID }}
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
         run: |
           DAY_PST=$(TZ="America/Los_Angeles" date +%u) 
           if [ "$DAY_PST" = "7" ]; then 
