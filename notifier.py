@@ -12,6 +12,7 @@ Public interface:
   send_summary(alerts, trades) -> None  (daily digest, optional)
 """
 
+import html
 import os
 import re
 import smtplib
@@ -202,7 +203,7 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
                   border-left:4px solid #3b82f6;">
         <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
                   text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{context}</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{html.escape(context)}</p>
       </div>"""
 
     table_rows = _trade_rows_html(alert.trades)
@@ -521,7 +522,7 @@ def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
                   border-left:4px solid #3b82f6;">
         <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
                   text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{context}</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{html.escape(context)}</p>
       </div>"""
 
     # ── HTML ──
@@ -766,7 +767,7 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
         signal_items = '<li style="color:#6b7280;font-size:13px;padding:8px 0;">No alerts this week.</li>'
 
     if legislative_text:
-        formatted = legislative_text.replace("\n", "<br>")
+        formatted = html.escape(legislative_text).replace("\n", "<br>")
         legislative_html = f"""
       <h2 style="font-size:14px;font-weight:600;color:#111;margin:24px 0 10px;">Legislative Intelligence</h2>
       <div style="padding:14px 16px;background:#eff6ff;border-radius:6px;border-left:4px solid #3b82f6;">
