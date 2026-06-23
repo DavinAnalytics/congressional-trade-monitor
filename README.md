@@ -21,10 +21,12 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 
 | Tier | Signal | Trigger |
 |------|--------|---------|
-| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal; email includes Gemini AI context explaining why the cluster may be forming |
+| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal |
 | 🏆 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
 | 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
-| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal; email includes Gemini AI context |
+| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal |
+
+Every alert email includes a Gemini AI context block explaining why the signal may be forming right now (see [AI-Powered Features](#ai-powered-features-gemini-25-flash)).
 
 Alert header color in the dashboard and email reflects trade direction: **green** for net buy activity, **red** for net sell activity — independent of tier.
 
@@ -152,9 +154,9 @@ The model is overridable with the optional `GEMINI_MODEL` env var (default `gemi
 
 All AI-generated text is passed through `html.escape()` before being inserted into HTML email bodies, so any HTML characters in Gemini's response are rendered as literal text rather than markup.
 
-### Alert Context (Cluster + Cross-Signal emails)
+### Alert Context (all alert emails)
 
-When a cluster or cross-cluster alert fires, `generate_alert_context()` in `notifier.py` makes one grounded Gemini call asking why the signal might be forming right now. The response (2–3 sentences) appears in the email as a blue **"AI Context · Gemini + Google Search"** block:
+When any alert fires — cluster, cross-signal, win-rate, or watchlist — `generate_alert_context()` in `notifier.py` makes one grounded Gemini call asking why the signal might be forming right now. The response (2–3 sentences) appears in the email as a blue **"AI Context · Gemini + Google Search"** block, placed below the trades table:
 
 > *"Jensen Huang testified before the Senate Commerce Committee on AI export controls on June 17. The Semiconductor Export Reform Act cleared committee markup June 18. Two of the three congressional buyers sit on Science & Technology subcommittees with direct chip-policy authority."*
 
