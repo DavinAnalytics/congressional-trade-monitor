@@ -2,7 +2,7 @@
 **Author:** Davin Kim  
 **Status:** ✅ Complete - all modules built and tested  
 **Live dashboard:** https://congressional-trade-monitor.streamlit.app/  
-**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.0 Flash)  
+**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider (CEO/CFO) open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
 
 ---
@@ -144,9 +144,11 @@ Both are handled by a single `monitor.yml` workflow. The script checks the day o
 
 ---
 
-## AI-Powered Features (Gemini 2.0 Flash)
+## AI-Powered Features (Gemini 2.5 Flash)
 
 All AI features use Google Search grounding, so Gemini pulls real-time search results rather than relying on training data. Every feature degrades gracefully — if `GEMINI_API_KEY` is not set, the email still sends with all deterministic content intact and the AI blocks are simply omitted.
+
+The model is overridable with the optional `GEMINI_MODEL` env var (default `gemini-2.5-flash`), so a future model deprecation is a config change rather than a code change. Google Search grounding has a stricter free-tier quota than plain generation; when a grounded call hits a `429` quota error, the call automatically retries **without** grounding so the email still receives AI context (sourced from the model's training data instead of live search).
 
 All AI-generated text is passed through `html.escape()` before being inserted into HTML email bodies, so any HTML characters in Gemini's response are rendered as literal text rather than markup.
 
@@ -346,6 +348,8 @@ Credentials are stored in `.env`, NOT in source code.
    ALERT_EMAIL_PASSWORD=xxxx xxxx xxxx xxxx
    ALERT_EMAIL_RECIPIENTS=your_email@gmail.com
    GEMINI_API_KEY=your_gemini_api_key   # optional — get one free at aistudio.google.com
+   # Optional: override the Gemini model (default gemini-2.5-flash)
+   GEMINI_MODEL=gemini-2.5-flash
    # Optional: minimum market cap (in $M) for OpenInsider CEO/CFO buys (default 300)
    MIN_MARKET_CAP_M=300
    ```

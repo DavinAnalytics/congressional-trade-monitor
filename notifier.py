@@ -12,10 +12,11 @@ Public interface:
   send_summary(alerts, trades) -> None  (daily digest, optional)
 """
 
-import html
 import os
 import re
 import smtplib
+import time
+from html import escape
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -141,33 +142,84 @@ def _base_html(title: str, accent: str, body: str) -> str:
 
 # ── AI context ────────────────────────────────────────────────────────────────
 
-def generate_alert_context(ticker: str, members: list[str], direction: str) -> str | None:
-    """Call Gemini with Google Search grounding to explain why a cluster formed."""
+# Gemini model is overridable via env so a future deprecation is a config change,
+# not a code change. gemini-2.0-flash was retired June 2026.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Google Search grounding has a much lower free-tier quota than plain generation.
+# Once a grounded call 429s, flip this so the rest of the run skips straight to
+# the non-grounded path instead of burning a failed grounded call every time.
+_grounding_exhausted = False
+
+
+def _gemini_generate(prompt: str, max_tokens: int, use_search: bool = True) -> str | None:
+    """
+    Single entry point for all Gemini calls.
+    Tries a grounded (Google Search) call first; on a 429 quota error, falls back
+    to a non-grounded call so the email still gets AI context. Returns None only
+    if there is no API key or every attempt fails.
+    """
+    global _grounding_exhausted
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return None
+
     try:
         from google import genai
         from google.genai import types
-        client = genai.Client(api_key=api_key)
-        names = ", ".join(members[:3]) + ("..." if len(members) > 3 else "")
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=(
-                f"In 2–3 sentences, explain what is happening right now with {ticker} stock "
-                f"that might explain why {len(members)} members of Congress ({names}) are "
-                f"{direction} it. Focus on recent news, earnings, legislation, or regulatory "
-                f"developments. Be specific and factual."
-            ),
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                max_output_tokens=150,
-            ),
-        )
-        return response.text.strip() if response.text else None
-    except Exception as e:
-        print(f"  ⚠ Gemini context: {e}")
+        from google.genai import errors
+    except ImportError as e:
+        print(f"  ⚠ Gemini SDK not installed: {e}")
         return None
+
+    client = genai.Client(api_key=api_key)
+
+    def _call(grounded: bool):
+        # Disable "thinking" — 2.5 models otherwise spend the output-token budget on
+        # internal reasoning, truncating these short summaries to a few words.
+        cfg = types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        )
+        if grounded:
+            cfg.tools = [types.Tool(google_search=types.GoogleSearch())]
+        resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg)
+        return resp.text.strip() if resp.text else None
+
+    # Attempt grounded first (unless already known-exhausted), then non-grounded.
+    grounded_first = use_search and not _grounding_exhausted
+    for grounded in ([True, False] if grounded_first else [False]):
+        for attempt in range(2):
+            try:
+                return _call(grounded)
+            except errors.ClientError as e:
+                if getattr(e, "code", None) == 429:
+                    if grounded:
+                        _grounding_exhausted = True  # don't retry grounded; drop to fallback
+                        break
+                    if attempt == 0:
+                        time.sleep(2)  # transient rate limit — brief backoff then retry
+                        continue
+                    return None
+                print(f"  ⚠ Gemini error: {e}")
+                return None
+            except Exception as e:
+                print(f"  ⚠ Gemini error: {e}")
+                return None
+    return None
+
+
+def generate_alert_context(ticker: str, members: list[str], direction: str) -> str | None:
+    """Explain why a cluster formed, grounded in real-time Google Search."""
+    names = ", ".join(members[:3]) + ("..." if len(members) > 3 else "")
+    prompt = (
+        f"In 2–3 sentences, explain what is happening right now with {ticker} stock "
+        f"that might explain why {len(members)} members of Congress ({names}) are "
+        f"{direction} it. Focus on recent news, earnings, legislation, or regulatory "
+        f"developments. Be specific and factual."
+    )
+    return _gemini_generate(prompt, max_tokens=220)
 
 
 # ── Alert formatters ──────────────────────────────────────────────────────────
@@ -203,7 +255,7 @@ def _format_cluster(alert: Alert) -> tuple[str, str, str]:
                   border-left:4px solid #3b82f6;">
         <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
                   text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{html.escape(context)}</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
       </div>"""
 
     table_rows = _trade_rows_html(alert.trades)
@@ -251,6 +303,10 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
     total   = stats.get("total", 0)
     tx_type = trade["type"].replace("_", " ").title()
 
+    members   = sorted({t["representative"] for t in alert.trades})
+    direction = "buying" if trade["type"] == "purchase" else "selling"
+    context   = generate_alert_context(ticker, members, direction)
+
     # Committee conflict context
     conflicts   = flag_conflicts(member, ticker)
     member_data = get_member_committees(member)
@@ -268,6 +324,7 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         f"{ticker} {tx_type.upper()}"
     )
 
+    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
     text = (
         f"WIN-RATE ALERT\n"
         f"{'='*50}\n"
@@ -277,6 +334,7 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         f"New Trade:\n{_trade_rows_text([trade])}"
         f"{conflict_text}\n\n"
         f"Filing: {trade['ptr_link']}"
+        f"{context_text}"
     )
 
     # HTML conflict block
@@ -313,6 +371,16 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         </p>
       </div>"""
 
+    context_html = ""
+    if context:
+        context_html = f"""
+      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
+                  border-left:4px solid #3b82f6;">
+        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
+                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
+      </div>"""
+
     table_rows = _trade_rows_html([trade])
     body = f"""
       <p style="font-size:15px;color:#111;margin:0 0 16px;">
@@ -341,7 +409,7 @@ def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
           Benchmark window: {config.WIN_RATE_PRIMARY}d vs SPY
         </p>
       </div>
-      {conflict_html}"""
+      {conflict_html}{context_html}"""
 
     html = _base_html(
         title  = f"🏆 High Win-Rate — {member}",
@@ -361,6 +429,10 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
     tx_type = trade["type"].replace("_", " ").title()
     owners  = sorted({t.get("owner", "") for t in alert.trades if t.get("owner")})
     owner_str = f" ({', '.join(owners)})" if owners else ""
+
+    members   = sorted({t["representative"] for t in alert.trades})
+    direction = "buying" if trade["type"] == "purchase" else "selling"
+    context   = generate_alert_context(ticker, members, direction)
 
     # Win-rate context
     stats = win_rates.get(member, {})
@@ -393,6 +465,7 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
     else:
         conflict_text = "\nCommittee Conflicts: No committee data available"
 
+    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
     text = (
         f"WATCHLIST ALERT\n"
         f"{'='*50}\n"
@@ -404,6 +477,7 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         f"Win Rate:  {wr_str}"
         f"{conflict_text}\n\n"
         f"Filing:    {trade['ptr_link']}"
+        f"{context_text}"
     )
 
     # HTML conflict block
@@ -440,6 +514,16 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
         </p>
       </div>"""
 
+    context_html = ""
+    if context:
+        context_html = f"""
+      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
+                  border-left:4px solid #3b82f6;">
+        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
+                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
+      </div>"""
+
     table_rows = _trade_rows_html(alert.trades)
     body = f"""
       <p style="font-size:15px;color:#111;margin:0 0 16px;">
@@ -467,7 +551,7 @@ def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
           Win rate measures how often purchases beat SPY over {config.WIN_RATE_PRIMARY} days.
         </p>
       </div>
-      {conflict_html}"""
+      {conflict_html}{context_html}"""
 
     html = _base_html(
         title  = f"👁️ Watchlist — {member}",
@@ -522,7 +606,7 @@ def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
                   border-left:4px solid #3b82f6;">
         <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
                   text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{html.escape(context)}</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
       </div>"""
 
     # ── HTML ──
@@ -647,39 +731,21 @@ def _sector_net_activity(trades: list[dict]) -> list[tuple[str, int, int]]:
 def generate_weekly_intelligence(
     sector_activity: list[tuple[str, int, int]],
 ) -> str | None:
-    """One Gemini grounded call for weekly legislative + regulatory intelligence."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return None
-    try:
-        from google import genai
-        from google.genai import types
-        client = genai.Client(api_key=api_key)
+    """Weekly legislative + regulatory intelligence, grounded in real-time search."""
+    top_accumulated = [s for s, b, sl in sector_activity if b > sl][:3]
+    top_distributed = [s for s, b, sl in sector_activity if sl > b][:2]
 
-        top_accumulated = [s for s, b, sl in sector_activity if b > sl][:3]
-        top_distributed = [s for s, b, sl in sector_activity if sl > b][:2]
-
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=(
-                f"Today is {datetime.now().strftime('%B %d, %Y')}. "
-                f"US congressional trading this week shows accumulation in: "
-                f"{', '.join(top_accumulated) or 'mixed sectors'}. "
-                f"Distribution in: {', '.join(top_distributed) or 'none notable'}. "
-                f"In 3–4 bullet points, summarize what US legislation or regulatory actions "
-                f"advanced this week that could explain or relate to this trading activity. "
-                f"Name specific bills, agencies, and companies where possible. "
-                f"If nothing notable, say so briefly."
-            ),
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                max_output_tokens=300,
-            ),
-        )
-        return response.text.strip() if response.text else None
-    except Exception as e:
-        print(f"  ⚠ Gemini weekly intelligence: {e}")
-        return None
+    prompt = (
+        f"Today is {datetime.now().strftime('%B %d, %Y')}. "
+        f"US congressional trading this week shows accumulation in: "
+        f"{', '.join(top_accumulated) or 'mixed sectors'}. "
+        f"Distribution in: {', '.join(top_distributed) or 'none notable'}. "
+        f"In 3–4 bullet points, summarize what US legislation or regulatory actions "
+        f"advanced this week that could explain or relate to this trading activity. "
+        f"Name specific bills, agencies, and companies where possible. "
+        f"If nothing notable, say so briefly."
+    )
+    return _gemini_generate(prompt, max_tokens=300)
 
 
 def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
@@ -767,7 +833,7 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
         signal_items = '<li style="color:#6b7280;font-size:13px;padding:8px 0;">No alerts this week.</li>'
 
     if legislative_text:
-        formatted = html.escape(legislative_text).replace("\n", "<br>")
+        formatted = escape(legislative_text).replace("\n", "<br>")
         legislative_html = f"""
       <h2 style="font-size:14px;font-weight:600;color:#111;margin:24px 0 10px;">Legislative Intelligence</h2>
       <div style="padding:14px 16px;background:#eff6ff;border-radius:6px;border-left:4px solid #3b82f6;">
