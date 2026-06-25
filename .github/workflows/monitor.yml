@@ -7,6 +7,14 @@ on:
     - cron: "55 13 * * *"
   workflow_dispatch:
     # Allows manual trigger from GitHub Actions tab
+    inputs:
+      action:
+        description: "What to run"
+        type: choice
+        options:
+          - monitor
+          - reset
+        default: monitor
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -37,11 +45,16 @@ jobs:
           GIST_TOKEN:             ${{ secrets.GIST_TOKEN }}
           GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
         run: |
-          DAY_PST=$(TZ="America/Los_Angeles" date +%u) 
-          if [ "$DAY_PST" = "7" ]; then 
-            echo "It is Sunday in California — running weekly summary" 
-            python monitor.py --summary 
-          else 
-            echo "It is Mon-Sat in California — running alert monitor" 
-            python monitor.py --once 
+          if [ "${{ github.event.inputs.action }}" = "reset" ]; then
+            echo "Manual reset requested — clearing seen-state Gist"
+            python monitor.py --reset-state
+            exit 0
+          fi
+          DAY_PST=$(TZ="America/Los_Angeles" date +%u)
+          if [ "$DAY_PST" = "7" ]; then
+            echo "It is Sunday in California — running weekly summary"
+            python monitor.py --summary
+          else
+            echo "It is Mon-Sat in California — running alert monitor"
+            python monitor.py --once
           fi

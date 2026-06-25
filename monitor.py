@@ -163,9 +163,10 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python monitor.py              Run forever, polling every 4 hours
-  python monitor.py --once       Single poll, print alerts, exit
-  python monitor.py --summary    Send daily digest email, exit
+  python monitor.py               Run forever, polling every 4 hours
+  python monitor.py --once        Single poll, print alerts, exit
+  python monitor.py --summary     Send daily digest email, exit
+  python monitor.py --reset-state Clear the seen-trades memory, exit
         """,
     )
     parser.add_argument(
@@ -178,7 +179,21 @@ Examples:
         action="store_true",
         help="Send a daily digest email and exit",
     )
+    parser.add_argument(
+        "--reset-state",
+        action="store_true",
+        help="Clear seen_trades.json (Gist or local file) and exit — next run re-alerts all recent trades",
+    )
     args = parser.parse_args()
+
+    if args.reset_state:
+        from analyzer import _save_seen, _gist_enabled
+        _banner("Resetting seen-state")
+        _save_seen(set())
+        where = "GitHub Gist" if _gist_enabled() else f"local file ({config.SEEN_TRADES_FILE})"
+        print(f"\n✓ Seen-state cleared in {where}.")
+        print("  The next run will treat all recent trades as new and re-alert them once.")
+        return
 
     if args.summary:
         _banner("Sending daily digest")
