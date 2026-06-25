@@ -252,6 +252,26 @@ def detect_winrate_alerts(
     return alerts
 
 
+def _canonical_name(name: str) -> str:
+    """
+    Reduce a member name to a lowercase "first last" form for matching.
+    Handles both formats in play:
+      "Last, First [Middle]" — used by the trade disclosure fetcher
+      "First [Middle] Last"  — used by config.WATCHLIST
+    Mirrors the name handling in committees.get_member_committees().
+    """
+    key = name.lower().strip()
+    if "," in key:
+        last, _, first = key.partition(",")
+        last  = last.strip()
+        first = first.strip().split()[0] if first.strip() else ""  # drop middle initial
+        return f"{first} {last}".strip()
+    parts = key.split()
+    if len(parts) >= 2:
+        return f"{parts[0]} {parts[-1]}"
+    return key
+
+
 def detect_watchlist_alerts(trades: list[dict]) -> list[Alert]:
     """
     🟢 Watchlist Alert
@@ -259,13 +279,13 @@ def detect_watchlist_alerts(trades: list[dict]) -> list[Alert]:
     Deduplicates by (member, ticker, date) — spouse + self trades on the
     same ticker/date count as one alert, with all owners grouped together.
     """
-    watchlist_lower = [w.lower() for w in config.WATCHLIST]
+    watchlist_canon = {_canonical_name(w) for w in config.WATCHLIST}
 
     # Group by (member, ticker, date) to collapse spouse/self rows
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for trade in trades:
         member = trade["representative"]
-        if member.lower() in watchlist_lower:
+        if _canonical_name(member) in watchlist_canon:
             key = (member, trade["ticker"], trade["transaction_date"])
             groups[key].append(trade)
 
@@ -462,6 +482,18 @@ def mark_seen(trades: list[dict], seen: set[str]) -> None:
     _save_seen(seen)
 
 
+def _cluster_key(alert: Alert) -> str:
+    """
+    Unique key for a cluster alert — used to avoid re-alerting the same cluster
+    every run. Built from the full set of participating trades, so a new member
+    or trade joining the cluster produces a fresh alert while an unchanged
+    cluster stays deduped.
+    """
+    direction = "buy" if alert.trades[0]["type"] == "purchase" else "sell"
+    parts = sorted(_trade_key(t) for t in alert.trades)
+    return f"cluster|{alert.ticker}|{direction}|" + "|".join(parts)
+
+
 def _cross_key(alert: Alert) -> str:
     """
     Unique key for a cross-cluster alert — used to avoid re-alerting.
@@ -522,9 +554,15 @@ def analyze(trades: list[dict]) -> list[Alert]:
     new_trades, seen = filter_new_trades(trades)
     print(f"  {len(trades)} total trades, {len(new_trades)} new since last run")
 
-    # 🔴 Cluster — run on full trade list (needs historical context)
+    # 🔴 Cluster — run on full trade list (needs historical context), then dedup
+    # against seen state so the same cluster doesn't re-email every run.
     print("  Detecting cluster alerts...")
-    cluster_alerts = detect_cluster_alerts(trades)
+    cluster_alerts = []
+    for alert in detect_cluster_alerts(trades):
+        key = _cluster_key(alert)
+        if key not in seen:
+            seen.add(key)
+            cluster_alerts.append(alert)
 
     # Win rates — computed once, used by win-rate detector
     print("  Scoring win rates...")
