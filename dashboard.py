@@ -165,6 +165,7 @@ def _member_dialog(name: str, days: int):
                 column_config={
                     "representative": None,
                     "asset_description": None,
+                    "asset_type": None,
                     "chamber": None,
                     "transaction_date": st.column_config.DateColumn("Tx Date", format="MMM DD, YYYY"),
                     "disclosure_date": st.column_config.TextColumn("Disclosed"),

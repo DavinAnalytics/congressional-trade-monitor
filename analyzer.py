@@ -76,6 +76,8 @@ def _score_trade(trade: dict, window_days: int) -> bool | None:
     """
     if trade["type"] not in ("purchase",):
         return None  # only score purchases for now
+    if trade.get("asset_type") == "option":
+        return None  # options don't map to a simple stock-vs-SPY return
 
     try:
         tx_date  = datetime.strptime(trade["transaction_date"], "%Y-%m-%d")

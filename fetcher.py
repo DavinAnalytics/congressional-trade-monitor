@@ -171,8 +171,9 @@ def _parse_senate_viewer(
         date_raw   = cells[col.get("transaction date", 1)].strip() if "transaction date" in col else ""
         asset_name = cells[col.get("asset name", 4)].strip() if "asset name" in col else ""
 
-        # Only stock trades (skip bonds, real estate, etc.)
-        if asset_type and asset_type not in ("stock", "st", ""):
+        # Stock and option trades only (skip bonds, real estate, etc.)
+        is_option = "option" in asset_type
+        if asset_type and asset_type not in ("stock", "st", "") and not is_option:
             continue
         if not ticker or ticker in ("--", "N/A", ""):
             continue
@@ -192,6 +193,7 @@ def _parse_senate_viewer(
             "amount":            amount,
             "ptr_link":          view_url,
             "owner":             owner,
+            "asset_type":        "option" if is_option else "stock",
         })
 
     return trades
@@ -277,46 +279,91 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
         print(f"    ⚠ Could not parse PDF {pdf_url}: {e}")
         return []
 
-    ticker_re = re.compile(r'\(([A-Z]{1,5})\)\s*\[ST\]')
-    type_re   = re.compile(r'\[ST\]\s+(P|S|SP|SB)\b')
-    date_re   = re.compile(r'(\d{2}/\d{2}/\d{4})')
-    amount_re = re.compile(r'(\$[\d,]+\s*-\s*\$[\d,]+|\$[\d,]+\+?)')
+    lines = full_text.splitlines()
+
+    # Asset type tag "[ST]" (stock) or "[OP]" (option), with the ticker "(XXXX)"
+    # just before it. The asset cell usually wraps, so the tag, ticker, and the
+    # type/date/amount columns land on two adjacent lines in varying combinations.
+    tag_re    = re.compile(r'\[(ST|OP)\]')
+    ticker_re = re.compile(r'\(([A-Z]{1,5})\)')
+    # Transaction type (+ optional "(partial)") immediately followed by the
+    # transaction and notification dates — the adjacency marks the metadata cell
+    # (longer codes ordered first so "SP" wins over "S").
+    meta_re = re.compile(
+        r'\b(SP|SB|S|P)(\s*\(partial\))?\s+(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})'
+    )
+    full_amount_re = re.compile(r'\$[\d,]+\s*-\s*\$[\d,]+')
+    low_amount_re  = re.compile(r'(\$[\d,]+)\s*-\s*$')
+    any_amount_re  = re.compile(r'\$[\d,]+\+?')
 
     trades = []
-    seen_lines = set()
+    seen = set()
 
-    for line in full_text.splitlines():
-        ticker_m = ticker_re.search(line)
-        if not ticker_m:
+    for i, line in enumerate(lines):
+        tag = tag_re.search(line)
+        if not tag:
             continue
+        code = tag.group(1)
 
-        line_key = line.strip()
-        if line_key in seen_lines:
+        # The metadata cell (type + dates) is on the tag line, or — when the asset
+        # name wraps — a few lines above it. Walk up through asset-name
+        # continuation lines, stopping at the previous row's tag to stay in-row.
+        meta = meta_re.search(line)
+        start = i
+        if not meta:
+            for j in range(i - 1, max(-1, i - 4), -1):
+                if tag_re.search(lines[j]):
+                    break
+                meta = meta_re.search(lines[j])
+                if meta:
+                    start = j
+                    break
+            if not meta:
+                continue
+
+        meta_line = lines[start]
+        wrapped = start != i
+        block = " ".join(lines[start:i + 1])
+
+        tickers = ticker_re.findall(block)
+        if not tickers:
             continue
-        seen_lines.add(line_key)
+        ticker = tickers[-1].upper()
 
-        ticker   = ticker_m.group(1)
-        type_m   = type_re.search(line)
-        tx_type  = type_m.group(1) if type_m else ""
-        dates    = date_re.findall(line)
-        amount_m = amount_re.search(line)
-        tx_date  = _parse_date(dates[0]) if dates else None
-        dis_date = dates[1] if len(dates) > 1 else ""
-
+        tx_date = _parse_date(meta.group(3))
         if tx_date is None:
             continue
+
+        key = (meta_line.strip(), line.strip())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Amount is a full "$low - $high" range, or a low bound on the meta line
+        # whose high bound wrapped onto the tag line.
+        fm = full_amount_re.search(meta_line)
+        if fm:
+            amount = fm.group(0)
+        elif wrapped and (lm := low_amount_re.search(meta_line)) and (hm := any_amount_re.search(line)):
+            amount = f"{lm.group(1)} - {hm.group(0)}"
+        else:
+            am = any_amount_re.search(meta_line)
+            amount = am.group(0) if am else ""
+
+        tx_type = "sp" if meta.group(2) else meta.group(1)
 
         trades.append({
             "chamber":           "House",
             "representative":    member_name,
-            "ticker":            ticker.upper(),
-            "asset_description": line.strip()[:100],
+            "ticker":            ticker,
+            "asset_description": " ".join(block.split())[:100],
             "type":              _normalize_type(tx_type),
             "transaction_date":  tx_date.strftime("%Y-%m-%d"),
-            "disclosure_date":   dis_date,
-            "amount":            amount_m.group(0) if amount_m else "",
+            "disclosure_date":   meta.group(4),
+            "amount":            amount,
             "ptr_link":          pdf_url,
             "owner":             "",
+            "asset_type":        "option" if code == "OP" else "stock",
         })
 
     return trades
