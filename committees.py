@@ -293,10 +293,11 @@ def get_member_committees(name: str) -> dict:
         if alt in _COMMITTEE_CACHE:
             return _COMMITTEE_CACHE[alt]
         # Try without middle initial: "David J." → "David"
-        first_only = first.split()[0]
-        alt_no_mid = f"{first_only} {last}"
-        if alt_no_mid in _COMMITTEE_CACHE:
-            return _COMMITTEE_CACHE[alt_no_mid]
+        first_parts = first.split()
+        if first_parts:
+            alt_no_mid = f"{first_parts[0]} {last}"
+            if alt_no_mid in _COMMITTEE_CACHE:
+                return _COMMITTEE_CACHE[alt_no_mid]
 
     return {}
 
