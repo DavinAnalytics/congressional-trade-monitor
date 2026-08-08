@@ -442,9 +442,8 @@ def test_performance_summary_aggregates_by_tier_and_bucket(stub_state):
 
     assert summary["total"] == 5
     assert summary["unmatured"] == 1
-    assert summary["by_tier"]["cluster"] == {
-        "n": 2, "hit_rate": 0.5, "avg_edge": 4.0,
-    }
+    cluster = summary["by_tier"]["cluster"]
+    assert (cluster["n"], cluster["hit_rate"], cluster["avg_edge"]) == (2, 0.5, 4.0)
     assert summary["by_tier"]["cross_cluster"]["hit_rate"] == 1.0
     assert summary["by_bucket"]["70+"]["n"] == 3
     assert summary["by_bucket"]["0-40"]["n"] == 1
@@ -641,6 +640,79 @@ def test_summary_breaks_out_by_direction(stub_state):
 
     assert summary["by_direction"]["buy"]["hit_rate"] == 1.0
     assert summary["by_direction"]["sell"]["hit_rate"] == 0.0
+
+
+# ── Actionable vs trade-date baseline ─────────────────────────────────────────
+
+def test_actionable_baseline_scores_from_the_alert_date(stub_state, monkeypatch):
+    """
+    Disclosure lag means the trade-date entry is a price you could never have
+    paid. Scoring from the fire date measures the monitor, not the politician.
+    """
+    stub_state[config.HISTORY_FILE] = [{
+        "id": "cluster|NVDA|2026-01-01", "tier": "cluster", "ticker": "NVDA",
+        "score": 60.0, "direction": "buy",
+        "entry_date": "2026-01-01", "entry_price": 100.0, "spy_entry": 400.0,
+        # Alert only reached the user 40 days later, by which point the stock
+        # had already run to 130 while SPY was flat.
+        "fired_date": "2026-02-10", "fired_price": 130.0, "spy_fired": 400.0,
+    }]
+    monkeypatch.setattr(history, "_get_price",
+                        lambda t, d: 143.0 if t == "NVDA" else 420.0)
+
+    history.score_history(today=datetime(2026, 9, 1))
+    (r,) = stub_state[config.HISTORY_FILE]
+    w = config.WIN_RATE_PRIMARY
+
+    # From the trade date: +43% vs SPY +5% → +38% edge.
+    assert r[f"edge_{w}"] == pytest.approx(38.0)
+    # From the alert date: +10% vs SPY +5% → +5% edge. The 30 points in between
+    # were eaten by disclosure lag and were never capturable.
+    assert r[f"act_edge_{w}"] == pytest.approx(5.0)
+
+
+def test_actionable_edge_inverts_for_sells_too(stub_state, monkeypatch):
+    stub_state[config.HISTORY_FILE] = [{
+        "id": "s", "tier": "cluster", "ticker": "NVDA", "score": 60.0,
+        "direction": "sell",
+        "entry_date": "2026-01-01", "entry_price": 100.0, "spy_entry": 400.0,
+        "fired_date": "2026-01-01", "fired_price": 100.0, "spy_fired": 400.0,
+    }]
+    monkeypatch.setattr(history, "_get_price",
+                        lambda t, d: 120.0 if t == "NVDA" else 420.0)
+
+    history.score_history(today=datetime(2026, 9, 1))
+    (r,) = stub_state[config.HISTORY_FILE]
+    w = config.WIN_RATE_PRIMARY
+    assert r[f"act_edge_{w}"] == pytest.approx(-15.0)
+
+
+def test_summary_reports_both_baselines(stub_state):
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "1", "tier": "cluster", "ticker": "A", "score": 80.0, "direction": "buy",
+         f"edge_{w}": 20.0, f"act_edge_{w}": 2.0},
+        {"id": "2", "tier": "cluster", "ticker": "B", "score": 80.0, "direction": "buy",
+         f"edge_{w}": 10.0, f"act_edge_{w}": -4.0},
+    ]
+    s = history.performance_summary()["by_tier"]["cluster"]
+
+    assert s["avg_edge"] == pytest.approx(15.0)             # politician looked great
+    assert s["actionable"]["avg_edge"] == pytest.approx(-1.0)  # you would have lost
+    assert s["actionable"]["hit_rate"] == 0.5
+
+    out = history.format_summary(history.performance_summary())
+    assert "trade-date" in out and "actionable" in out
+
+
+def test_actionable_pending_when_only_trade_date_matured(stub_state):
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "1", "tier": "cluster", "ticker": "A", "score": 80.0,
+         "direction": "buy", f"edge_{w}": 5.0},
+    ]
+    assert history.performance_summary()["by_tier"]["cluster"]["actionable"]["n"] == 0
+    assert "actionable pending" in history.format_summary(history.performance_summary())
 
 
 # ── AI text cleanup ───────────────────────────────────────────────────────────

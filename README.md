@@ -337,19 +337,25 @@ Alert performance vs SPY over 60 days
   38 recorded · 6 still maturing
 
   By tier
-    cross_cluster     9 scored · 67% right · +4.2% avg edge
-    cluster          14 scored · 50% right · +0.8% avg edge
-    watchlist         9 scored · 44% right · -1.1% avg edge
+    cross_cluster     9 scored · trade-date 67% / +4.2% · actionable 56% / +1.1%
+    cluster          14 scored · trade-date 50% / +0.8% · actionable 43% / -0.4%
+    watchlist         9 scored · trade-date 44% / -1.1% · actionable 44% / -1.3%
 
   By direction
-    buy              21 scored · 57% right · +2.1% avg edge
-    sell             11 scored · 45% right · -0.6% avg edge
+    buy              21 scored · trade-date 57% / +2.1% · actionable 52% / +0.5%
+    sell             11 scored · trade-date 45% / -0.6% · actionable 45% / -0.7%
 
   By conviction score
-    0-40              7 scored · 43% right · -0.9% avg edge
-    40-70            16 scored · 50% right · +1.1% avg edge
-    70+               9 scored · 67% right · +4.4% avg edge
+    0-40              7 scored · trade-date 43% / -0.9% · actionable 43% / -1.0%
+    40-70            16 scored · trade-date 50% / +1.1% · actionable 44% / -0.2%
+    70+               9 scored · trade-date 67% / +4.4% · actionable 56% / +1.4%
+
+  Cross-signals by insider seniority
+    CEO/CFO           5 scored · trade-date 80% / +6.1% · actionable 60% / +2.2%
+    other/dir.        4 scored · trade-date 50% / +1.0% · actionable 25% / -0.9%
 ```
+
+**Two baselines.** Every record is scored twice. `entry_*` measures from the politician's trade date — it answers "was their trade good". `act_*` measures from the day the alert actually reached you, which is the first moment you could have acted. Because disclosure lags by up to 45 days, the trade-date figure includes a return you had no way to capture; the gap between the two *is* the cost of disclosure lag. **Only the actionable column says whether the monitor is worth running.**
 
 **Edge, not excess.** Raw excess return answers "did the stock beat SPY", which is only the right question for a buy signal. A sell cluster predicts *under*performance, so a stock that beats SPY means that signal was **wrong**. `edge_N` flips the sign for sells, so it reads uniformly as "how far the signal was right" and is safe to aggregate across directions. Alerts recorded before direction tracking existed cannot be scored either way and are excluded from aggregation rather than silently inverted.
 

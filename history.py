@@ -76,8 +76,10 @@ def record_alerts(alerts: list[Alert]) -> int:
             continue
 
         entry_date = alert.meta.get("first_date") or alert.fired_at[:10]
+        fired_date = alert.fired_at[:10]
         try:
             entry_dt = datetime.strptime(entry_date, "%Y-%m-%d")
+            fired_dt = datetime.strptime(fired_date, "%Y-%m-%d")
         except ValueError:
             continue
 
@@ -99,8 +101,15 @@ def record_alerts(alerts: list[Alert]) -> int:
             "insider_dollars":  alert.meta.get("insider_dollars", 0.0),
             "dollar_total":     alert.meta.get("dollar_total", 0.0),
             "median_lag_days": alert.meta.get("median_lag_days"),
+            # Two baselines. entry_* is the price on the trade date, which measures
+            # whether the politician's trade was good. fired_* is the price on the
+            # day the alert reached you — the first moment you could have acted.
+            # The gap between them is the return the disclosure lag ate, which you
+            # never had any way to capture.
             "entry_price":     _get_price(alert.ticker, entry_dt),
             "spy_entry":       _get_price("SPY", entry_dt),
+            "fired_price":     _get_price(alert.ticker, fired_dt),
+            "spy_fired":       _get_price("SPY", fired_dt),
         })
         known.add(rid)
         added += 1
@@ -113,18 +122,28 @@ def record_alerts(alerts: list[Alert]) -> int:
 
 # ── Forward scoring ───────────────────────────────────────────────────────────
 
+# The two baselines a record is scored from.
+#   (prefix, date field, price field, spy field)
+# "" is the trade date — did the politician trade well?
+# "act_" is the alert date — could YOU have made money acting on this?
+# Only the second says whether the monitor is worth running.
+BASELINES = [
+    ("",     "entry_date", "entry_price", "spy_entry"),
+    ("act_", "fired_date", "fired_price", "spy_fired"),
+]
+
+
 def score_history(today: datetime | None = None) -> int:
     """
     Fill in forward returns for records whose windows have elapsed.
-    Returns the number of (record, window) pairs newly scored.
+    Returns the number of (record, baseline, window) triples newly scored.
 
-    Each window gets ret_N (the ticker's return), spy_N (SPY's return over the
-    same span), excess_N (ret minus SPY) and edge_N.
+    Each baseline/window gets ret, spy, excess and edge.
 
-    edge_N is the number that matters. Excess alone answers "did the stock beat
+    edge is the number that matters. Excess alone answers "did the stock beat
     SPY", which is only the right question for a buy signal: a sell cluster
     predicts *under*performance, so a stock that beats SPY means the signal was
-    wrong. edge_N flips the sign for sells, making it read uniformly as "how much
+    wrong. edge flips the sign for sells, making it read uniformly as "how much
     the signal was right by" and safe to aggregate across directions.
     """
     today   = today or datetime.now()
@@ -134,40 +153,41 @@ def score_history(today: datetime | None = None) -> int:
 
     scored = 0
     for r in records:
-        entry_price = r.get("entry_price")
-        spy_entry   = r.get("spy_entry")
-        if not entry_price or not spy_entry:
-            continue
-
-        try:
-            entry_dt = datetime.strptime(r["entry_date"], "%Y-%m-%d")
-        except (ValueError, KeyError):
-            continue
-
         sign = -1 if r.get("direction") == "sell" else 1
 
-        for window in config.WIN_RATE_WINDOWS:
-            key = f"edge_{window}"
-            if key in r:
-                continue  # already scored
-
-            exit_dt = entry_dt + timedelta(days=window)
-            if exit_dt > today - timedelta(days=1):
-                continue  # window hasn't elapsed yet
-
-            price_exit = _get_price(r["ticker"], exit_dt)
-            spy_exit   = _get_price("SPY", exit_dt)
-            if not price_exit or not spy_exit:
+        for prefix, date_field, price_field, spy_field in BASELINES:
+            base_price = r.get(price_field)
+            base_spy   = r.get(spy_field)
+            if not base_price or not base_spy:
                 continue
 
-            ret = (price_exit - entry_price) / entry_price * 100
-            spy = (spy_exit - spy_entry) / spy_entry * 100
-            excess = ret - spy
-            r[f"ret_{window}"]    = round(ret, 2)
-            r[f"spy_{window}"]    = round(spy, 2)
-            r[f"excess_{window}"] = round(excess, 2)
-            r[key]                = round(sign * excess, 2)
-            scored += 1
+            try:
+                base_dt = datetime.strptime(r[date_field], "%Y-%m-%d")
+            except (ValueError, KeyError):
+                continue
+
+            for window in config.WIN_RATE_WINDOWS:
+                key = f"{prefix}edge_{window}"
+                if key in r:
+                    continue  # already scored
+
+                exit_dt = base_dt + timedelta(days=window)
+                if exit_dt > today - timedelta(days=1):
+                    continue  # window hasn't elapsed yet
+
+                price_exit = _get_price(r["ticker"], exit_dt)
+                spy_exit   = _get_price("SPY", exit_dt)
+                if not price_exit or not spy_exit:
+                    continue
+
+                ret    = (price_exit - base_price) / base_price * 100
+                spy    = (spy_exit - base_spy) / base_spy * 100
+                excess = ret - spy
+                r[f"{prefix}ret_{window}"]    = round(ret, 2)
+                r[f"{prefix}spy_{window}"]    = round(spy, 2)
+                r[f"{prefix}excess_{window}"] = round(excess, 2)
+                r[key]                        = round(sign * excess, 2)
+                scored += 1
 
     if scored:
         save_history(records)
@@ -180,9 +200,8 @@ def score_history(today: datetime | None = None) -> int:
 SCORE_BUCKETS = [("0-40", 0, 40), ("40-70", 40, 70), ("70+", 70, 101)]
 
 
-def _aggregate(records: list[dict], window: int) -> dict:
-    """Count, hit rate, and mean edge for one set of records."""
-    edges = [r[f"edge_{window}"] for r in records if f"edge_{window}" in r]
+def _stats(records: list[dict], key: str) -> dict:
+    edges = [r[key] for r in records if key in r]
     if not edges:
         return {"n": 0, "hit_rate": None, "avg_edge": None}
     return {
@@ -190,6 +209,18 @@ def _aggregate(records: list[dict], window: int) -> dict:
         "hit_rate": sum(1 for e in edges if e > 0) / len(edges),
         "avg_edge": sum(edges) / len(edges),
     }
+
+
+def _aggregate(records: list[dict], window: int) -> dict:
+    """
+    Hit rate and mean edge for one set of records, on both baselines.
+
+    Top-level keys stay on the trade-date baseline for backwards compatibility;
+    "actionable" holds the same stats measured from the day the alert fired.
+    """
+    out = _stats(records, f"edge_{window}")
+    out["actionable"] = _stats(records, f"act_edge_{window}")
+    return out
 
 
 def performance_summary(window: int | None = None) -> dict:
@@ -250,6 +281,8 @@ def format_summary(summary: dict) -> str:
         f"Alert performance vs SPY over {summary['window']} days",
         f"  {summary['total']} recorded · {summary['unmatured']} still maturing",
         "  Edge = how far the signal was right (sells inverted, so higher is better)",
+        "  trade-date = from the politician's trade · actionable = from when the alert reached you",
+        "  Only 'actionable' says whether the monitor is worth running.",
     ]
     if summary.get("legacy"):
         lines.append(f"  {summary['legacy']} pre-direction record(s) excluded as unscoreable")
@@ -263,12 +296,17 @@ def format_summary(summary: dict) -> str:
         for name, s in group.items():
             if not s["n"]:
                 lines.append(f"    {name:<16} no matured alerts yet")
-            else:
-                lines.append(
-                    f"    {name:<16} {s['n']:>3} scored · "
-                    f"{s['hit_rate']:.0%} right · "
-                    f"{s['avg_edge']:+.1f}% avg edge"
-                )
+                continue
+            act = s.get("actionable", {})
+            act_str = (
+                f"actionable {act['hit_rate']:.0%} / {act['avg_edge']:+.1f}%"
+                if act.get("n") else "actionable pending"
+            )
+            lines.append(
+                f"    {name:<16} {s['n']:>3} scored · "
+                f"trade-date {s['hit_rate']:.0%} / {s['avg_edge']:+.1f}% · "
+                f"{act_str}"
+            )
 
     rows("By tier", summary["by_tier"])
     lines.append("")
