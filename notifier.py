@@ -14,6 +14,7 @@ Public interface:
 """
 
 import os
+import re
 import smtplib
 import time
 from html import escape
@@ -156,6 +157,49 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 _grounding_exhausted = False
 
 
+# Google Search grounding returns inline citation markers like "[cite: 1, 2, 5]".
+# They are metadata, not prose, and reading them in an email is pure noise. The
+# trailing alternative catches an unterminated marker left by a truncated response.
+_CITE_RE = re.compile(r"\s*\[cite:[^\]]*(?:\]|$)")
+
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _clean_ai_text(text: str | None) -> str | None:
+    """
+    Make a raw Gemini response fit to put in an email.
+
+    Three things go wrong in practice, all seen in live output: grounding
+    citation markers leak into the prose, the model occasionally repeats its
+    whole answer verbatim, and hitting the token ceiling truncates it
+    mid-sentence. Strip, dedupe, and trim to the last complete sentence.
+    """
+    if not text:
+        return None
+
+    text = _CITE_RE.sub("", text).strip()
+    if not text:
+        return None
+
+    # Drop repeated sentences, keeping first occurrence and original order.
+    seen, kept = set(), []
+    for sentence in _SENTENCE_RE.split(text):
+        key = sentence.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            kept.append(sentence.strip())
+    text = " ".join(kept)
+
+    # A response cut off at the token limit ends mid-thought; drop the fragment
+    # rather than emailing half a sentence.
+    if text and text[-1] not in ".!?":
+        cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
+        if cut > 0:
+            text = text[: cut + 1]
+
+    return text.strip() or None
+
+
 def _gemini_generate(prompt: str, max_tokens: int, use_search: bool = True) -> str | None:
     """
     Single entry point for all Gemini calls.
@@ -189,7 +233,7 @@ def _gemini_generate(prompt: str, max_tokens: int, use_search: bool = True) -> s
         if grounded:
             cfg.tools = [types.Tool(google_search=types.GoogleSearch())]
         resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt, config=cfg)
-        return resp.text.strip() if resp.text else None
+        return _clean_ai_text(resp.text)
 
     # Attempt grounded first (unless already known-exhausted), then non-grounded.
     grounded_first = use_search and not _grounding_exhausted
@@ -246,9 +290,11 @@ def generate_alert_context(alert: Alert, conflicts: list[str] | None = None) -> 
         f"In 2–3 sentences, explain what is happening with {alert.ticker} right now "
         f"that could explain this activity. Focus on recent news, earnings, legislation, "
         f"or regulatory developments. If the committee assignments above are relevant to "
-        f"the company, say how. Be specific and factual; do not restate the numbers above."
+        f"the company, say how. Be specific and factual; do not restate the numbers above. "
+        f"Write the answer once — do not repeat or rephrase yourself. "
+        f"Do not include citation markers or source numbers."
     )
-    return _gemini_generate(prompt, max_tokens=220)
+    return _gemini_generate(prompt, max_tokens=config.AI_ALERT_MAX_TOKENS)
 
 
 # ── Alert cards ───────────────────────────────────────────────────────────────
@@ -589,9 +635,11 @@ def generate_weekly_intelligence(
         f"In 3–4 bullet points, summarize what US legislation or regulatory actions "
         f"advanced this week that could explain or relate to this trading activity. "
         f"Name specific bills, agencies, and companies where possible. "
-        f"If nothing notable, say so briefly."
+        f"If nothing notable, say so briefly. "
+        f"Write each point once — do not repeat yourself. "
+        f"Do not include citation markers or source numbers."
     )
-    return _gemini_generate(prompt, max_tokens=300)
+    return _gemini_generate(prompt, max_tokens=config.AI_WEEKLY_MAX_TOKENS)
 
 
 def send_summary(alerts: list[Alert], trades: list[dict], performance: str | None = None) -> None:

@@ -305,7 +305,9 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
 }
 ```
 
-**Feed resilience.** openinsider is a single unauthenticated endpoint and does time out in practice. The fetch retries `FETCH_ATTEMPTS` (3) times with linear backoff; if every attempt fails it raises `InsiderFetchError` rather than returning an empty list.
+**Pagination.** openinsider serves at most 100 rows per page regardless of the `rows=` parameter, and the screener routinely matches more — page 2 comes back full of distinct filings. Reading only page 1 silently discarded the rest. `_fetch_screener_rows()` reads up to `FETCH_MAX_PAGES` (3), stopping early on a short page and de-duplicating rows that appear on more than one. This raised coverage from 37 to 121 buys (67 distinct tickers), and **doubled CEO/CFO coverage on its own** — truncation had been costing high-seniority signal, not just volume.
+
+**Feed resilience.** openinsider is a single unauthenticated endpoint and does time out in practice. Each page retries `FETCH_ATTEMPTS` (3) times with linear backoff. If page 1 fails outright it raises `InsiderFetchError` rather than returning an empty list; if a *later* page fails, the rows already collected are kept, since a partial outage should not cost the whole run.
 
 That distinction matters: "the feed is down" makes cross-signals impossible, while "no insiders bought anything" is a real market observation, and collapsing the two silently switches off the strongest signal in the monitor. Callers degrade rather than crash — `monitor.poll()` continues with congressional alerts and prints `CROSS-SIGNAL DETECTION DISABLED FOR THIS RUN`, passing a warning banner into the digest email so a thin digest is never mistaken for a quiet market; the dashboard shows `st.warning` and renders its remaining panels.
 

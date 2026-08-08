@@ -643,6 +643,60 @@ def test_summary_breaks_out_by_direction(stub_state):
     assert summary["by_direction"]["sell"]["hit_rate"] == 0.0
 
 
+# ── AI text cleanup ───────────────────────────────────────────────────────────
+
+def test_strips_grounding_citation_markers():
+    raw = "TSM raised its 2026 outlook. [cite: 1, 2, 3] Revenue rose 36%. [cite: 5, 8]"
+    assert notifier._clean_ai_text(raw) == "TSM raised its 2026 outlook. Revenue rose 36%."
+
+
+def test_strips_unterminated_citation_marker():
+    """A truncated response leaves an unclosed marker, seen in live output."""
+    raw = "Markel reported Q2 results. Operating income fell. [cite: 1, 2, 3, 4,"
+    assert notifier._clean_ai_text(raw) == "Markel reported Q2 results. Operating income fell."
+
+
+def test_deduplicates_a_repeated_answer():
+    """Gemini repeated an entire paragraph verbatim in a live digest."""
+    once = "Delaney sold MKL shares. The company missed EPS estimates."
+    assert notifier._clean_ai_text(f"{once} {once}") == once
+
+
+def test_trims_truncated_trailing_sentence():
+    raw = "TSM beat estimates. It is ramping 2nm production ahead of schedule due to orders from"
+    assert notifier._clean_ai_text(raw) == "TSM beat estimates."
+
+
+def test_clean_ai_text_passes_through_good_output():
+    good = "Nvidia reports Q2 on August 26. Analysts expect strong data-center revenue."
+    assert notifier._clean_ai_text(good) == good
+
+
+def test_clean_ai_text_handles_empty_and_citation_only():
+    assert notifier._clean_ai_text(None) is None
+    assert notifier._clean_ai_text("") is None
+    assert notifier._clean_ai_text("[cite: 1, 2]") is None
+
+
+def test_seniority_split_covers_cross_signals_only(stub_state):
+    """Congress-only alerts have no insider leg and must not dilute the comparison."""
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "1", "tier": "cross_cluster", "ticker": "A", "score": 80.0,
+         "direction": "buy", "has_top_insider": True,  f"edge_{w}": 12.0},
+        {"id": "2", "tier": "cross_cluster", "ticker": "B", "score": 70.0,
+         "direction": "buy", "has_top_insider": False, f"edge_{w}": -3.0},
+        {"id": "3", "tier": "cluster", "ticker": "C", "score": 60.0,
+         "direction": "buy", f"edge_{w}": 99.0},   # must be ignored here
+    ]
+    s = history.performance_summary()["by_seniority"]
+
+    assert s["CEO/CFO"]["n"] == 1
+    assert s["CEO/CFO"]["avg_edge"] == pytest.approx(12.0)
+    assert s["other/dir."]["n"] == 1
+    assert s["other/dir."]["avg_edge"] == pytest.approx(-3.0)
+
+
 # ── Insider feed resilience ───────────────────────────────────────────────────
 
 class _Resp:
@@ -680,6 +734,81 @@ def test_screener_raises_after_exhausting_attempts(monkeypatch):
     with pytest.raises(openinsider_fetcher.InsiderFetchError, match="unreachable"):
         openinsider_fetcher._get_screener_html()
     assert len(calls) == openinsider_fetcher.FETCH_ATTEMPTS
+
+
+def test_pagination_reads_past_the_100_row_cap(monkeypatch):
+    """openinsider caps each page at 100 rows and routinely matches more."""
+    pages = {}
+    for page in (1, 2, 3):
+        pages[page] = [
+            {"name": f"P{page}N{i}", "ticker": "AAA", "transaction_date": "2026-08-01",
+             "amount": "$60,000"}
+            for i in range(openinsider_fetcher.ROWS_PER_PAGE)
+        ]
+    monkeypatch.setattr(openinsider_fetcher, "_get_screener_html", lambda page=1: str(page))
+    monkeypatch.setattr(openinsider_fetcher, "_parse_screener", lambda html: pages[int(html)])
+
+    rows = openinsider_fetcher._fetch_screener_rows()
+    assert len(rows) == 3 * openinsider_fetcher.ROWS_PER_PAGE
+
+
+def test_pagination_stops_on_a_short_page(monkeypatch):
+    calls = []
+
+    def html(page=1):
+        calls.append(page)
+        return str(page)
+
+    pages = {
+        1: [{"name": f"a{i}", "ticker": "A", "transaction_date": "2026-08-01", "amount": "$1"}
+            for i in range(openinsider_fetcher.ROWS_PER_PAGE)],
+        2: [{"name": "b", "ticker": "B", "transaction_date": "2026-08-01", "amount": "$1"}],
+    }
+    monkeypatch.setattr(openinsider_fetcher, "_get_screener_html", html)
+    monkeypatch.setattr(openinsider_fetcher, "_parse_screener", lambda h: pages[int(h)])
+
+    rows = openinsider_fetcher._fetch_screener_rows()
+    assert calls == [1, 2]                       # did not fetch page 3
+    assert len(rows) == openinsider_fetcher.ROWS_PER_PAGE + 1
+
+
+def test_pagination_dedupes_rows_shared_between_pages(monkeypatch):
+    dup = {"name": "X", "ticker": "A", "transaction_date": "2026-08-01", "amount": "$60,000"}
+    pages = {
+        1: [dup] + [{"name": f"a{i}", "ticker": "A", "transaction_date": "2026-08-01", "amount": "$1"}
+                    for i in range(openinsider_fetcher.ROWS_PER_PAGE - 1)],
+        2: [dup],
+    }
+    monkeypatch.setattr(openinsider_fetcher, "_get_screener_html", lambda page=1: str(page))
+    monkeypatch.setattr(openinsider_fetcher, "_parse_screener", lambda h: pages[int(h)])
+
+    rows = openinsider_fetcher._fetch_screener_rows()
+    assert len(rows) == openinsider_fetcher.ROWS_PER_PAGE   # dup counted once
+
+
+def test_later_page_outage_keeps_earlier_pages(monkeypatch):
+    """A partial outage should cost the extra pages, not the whole run."""
+    def html(page=1):
+        if page == 1:
+            return "1"
+        raise openinsider_fetcher.InsiderFetchError("down")
+
+    page1 = [{"name": f"a{i}", "ticker": "A", "transaction_date": "2026-08-01", "amount": "$1"}
+             for i in range(openinsider_fetcher.ROWS_PER_PAGE)]
+    monkeypatch.setattr(openinsider_fetcher, "_get_screener_html", html)
+    monkeypatch.setattr(openinsider_fetcher, "_parse_screener", lambda h: page1)
+
+    rows = openinsider_fetcher._fetch_screener_rows()
+    assert len(rows) == openinsider_fetcher.ROWS_PER_PAGE
+
+
+def test_first_page_outage_still_raises(monkeypatch):
+    def html(page=1):
+        raise openinsider_fetcher.InsiderFetchError("down")
+
+    monkeypatch.setattr(openinsider_fetcher, "_get_screener_html", html)
+    with pytest.raises(openinsider_fetcher.InsiderFetchError):
+        openinsider_fetcher._fetch_screener_rows()
 
 
 def test_outage_is_not_an_empty_result(monkeypatch):

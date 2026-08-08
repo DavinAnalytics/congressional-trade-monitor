@@ -36,6 +36,14 @@ FETCH_ATTEMPTS        = 3
 FETCH_BACKOFF_SECONDS = 5
 FETCH_TIMEOUT_SECONDS = 30
 
+# openinsider serves at most 100 rows per page regardless of the rows= parameter,
+# and the screener routinely matches more than that: page 2 comes back full of
+# distinct filings. Reading only page 1 silently discarded the rest, which became
+# actively harmful once directors were added to the filter — they compete for the
+# same 100 slots and would otherwise push CEO/CFO buys out of view.
+ROWS_PER_PAGE   = 100
+FETCH_MAX_PAGES = 3
+
 
 class InsiderFetchError(RuntimeError):
     """
@@ -47,12 +55,21 @@ class InsiderFetchError(RuntimeError):
     signal in the monitor with no indication that anything went wrong.
     """
 
-# Pre-filtered screener: open-market buys, CEO + CFO, last 45 days, 100 rows.
+# Pre-filtered screener: open-market buys, insiders, last 45 days, 100 rows.
+#
+# isofficer=1 is broad — openinsider returns any Section 16 officer under it, so
+# VPs already come through alongside CEOs and CFOs. isdirector=1 widens it further
+# to board members, who the insider-trading literature finds informative (weaker
+# than CEO/CFO, but well above noise). The binding constraint here is funnel width:
+# only about one ticker per 45-day window overlaps with congressional buying at all.
+# Seniority remains the discriminator — the conviction score credits CEO/CFO only —
+# and history.py records it per alert so this widening can be judged on outcomes
+# rather than argued about.
 SCREENER_URL = (
     "http://openinsider.com/screener?s=&o=&pl=&ph=&ll=&lh=&fd=45&fdr=&td=0&tdr="
     "&fdlyl=&fdlyh=&daysago=&xp=1&vl=&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999"
     "&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&ov=&ovh=&or=&orh=&btd=0&btdtdr="
-    "&isofficer=1&iscob=0&isceo=1&iscoo=0&iscfo=1&ispres=0&isvp=0&istd=0&isdirector=0"
+    "&isofficer=1&iscob=0&isceo=1&iscoo=0&iscfo=1&ispres=0&isvp=0&istd=0&isdirector=1"
     "&istenpercent=0&lasthalf=0&lastmonth=0&last2months=0&last3months=0&last6months=0"
     "&lastyear=0&years=0&hdegrees=0&hsectors=0&tab=jqgrid&page=1&rows=100&sidx=&sord=asc"
 )
@@ -136,27 +153,62 @@ def _parse_screener(html: str) -> list[dict]:
 
 # ── Fetching ──────────────────────────────────────────────────────────────────
 
-def _get_screener_html() -> str:
+def _get_screener_html(page: int = 1) -> str:
     """
-    GET the screener page, retrying with linear backoff.
+    GET one screener page, retrying with linear backoff.
     Raises InsiderFetchError if every attempt fails.
     """
+    url = SCREENER_URL.replace("page=1", f"page={page}")
+
     last_error = None
     for attempt in range(1, FETCH_ATTEMPTS + 1):
         try:
-            resp = requests.get(SCREENER_URL, headers=HEADERS, timeout=FETCH_TIMEOUT_SECONDS)
+            resp = requests.get(url, headers=HEADERS, timeout=FETCH_TIMEOUT_SECONDS)
             resp.raise_for_status()
             return resp.text
         except Exception as e:
             last_error = e
             if attempt < FETCH_ATTEMPTS:
                 wait = FETCH_BACKOFF_SECONDS * attempt
-                print(f"  ⚠ openinsider attempt {attempt}/{FETCH_ATTEMPTS} failed ({e}) — retrying in {wait}s")
+                print(f"  ⚠ openinsider page {page} attempt {attempt}/{FETCH_ATTEMPTS} "
+                      f"failed ({e}) — retrying in {wait}s")
                 time.sleep(wait)
 
     raise InsiderFetchError(
         f"openinsider unreachable after {FETCH_ATTEMPTS} attempts: {last_error}"
     )
+
+
+def _fetch_screener_rows() -> list[dict]:
+    """
+    Read screener pages until one comes back short or the page cap is reached.
+
+    Only the first page is required — if a later page fails after its retries,
+    keep what was already collected rather than losing the whole run to a
+    partial outage.
+    """
+    rows: list[dict] = []
+    seen: set[tuple] = set()
+
+    for page in range(1, FETCH_MAX_PAGES + 1):
+        try:
+            page_rows = _parse_screener(_get_screener_html(page))
+        except InsiderFetchError:
+            if page == 1:
+                raise
+            print(f"  ⚠ openinsider page {page} unavailable — continuing with {len(rows)} row(s)")
+            break
+
+        for r in page_rows:
+            key = (r["name"], r["ticker"], r["transaction_date"], r["amount"])
+            if key not in seen:
+                seen.add(key)
+                rows.append(r)
+
+        if len(page_rows) < ROWS_PER_PAGE:
+            break
+
+    return rows
 
 
 # ── Unified entry point ───────────────────────────────────────────────────────
@@ -170,7 +222,8 @@ def fetch_all(days: int = config.FETCH_DAYS) -> list[dict]:
     that as "no insider buys", since it makes cross-signals impossible.
     """
     print("Fetching insider data from openinsider.com...")
-    trades = _parse_screener(_get_screener_html())
+    trades = _fetch_screener_rows()
+    print(f"  {len(trades)} filing(s) read from screener")
 
     # Defensive window filter (the URL already constrains to fd=45).
     cutoff = datetime.now() - timedelta(days=days)

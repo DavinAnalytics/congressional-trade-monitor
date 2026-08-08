@@ -103,6 +103,13 @@ SCORE_PARTICIPANT_CAP = 5
 # Gemini's free tier is limited, so spend it on the highest-conviction signals.
 DIGEST_AI_TOP_N = 3
 
+# Output-token ceilings for the AI blurbs. The free tier is rationed by requests
+# per day, not tokens per request, and one run makes at most DIGEST_AI_TOP_N + 1
+# calls — so these can be generous. 220 was too tight and cut answers off
+# mid-sentence once the prompt carried the full enriched context.
+AI_ALERT_MAX_TOKENS   = 450
+AI_WEEKLY_MAX_TOKENS  = 600
+
 # ── Data Fetch Limits ─────────────────────────────────────────────────────────
 
 SENATE_FILING_LIMIT = 50

@@ -91,6 +91,10 @@ def record_alerts(alerts: list[Alert]) -> int:
             "direction":        alert.meta.get("direction", "buy"),
             "n_members":        alert.meta.get("n_members", 0),
             "n_insiders":       alert.meta.get("n_insiders", 0),
+            # Whether a CEO/CFO was involved, versus only lower officers or
+            # directors — so widening the insider screener can be judged on
+            # outcomes instead of argued about.
+            "has_top_insider":  alert.meta.get("has_top_insider", False),
             "congress_dollars": alert.meta.get("congress_dollars", 0.0),
             "insider_dollars":  alert.meta.get("insider_dollars", 0.0),
             "dollar_total":     alert.meta.get("dollar_total", 0.0),
@@ -219,6 +223,14 @@ def performance_summary(window: int | None = None) -> dict:
         in_bucket = [r for r in records if lo <= r.get("score", 0) < hi]
         by_bucket[label] = _aggregate(in_bucket, window)
 
+    # Only cross-signals have an insider leg, so seniority is judged on those
+    # alone — mixing in congress-only alerts would swamp the comparison.
+    cross = [r for r in records if r["tier"] == "cross_cluster"]
+    by_seniority = {
+        "CEO/CFO":     _aggregate([r for r in cross if r.get("has_top_insider")], window),
+        "other/dir.":  _aggregate([r for r in cross if not r.get("has_top_insider")], window),
+    }
+
     unmatured = sum(1 for r in records if f"edge_{window}" not in r)
     return {
         "window":       window,
@@ -228,6 +240,7 @@ def performance_summary(window: int | None = None) -> dict:
         "by_tier":      by_tier,
         "by_direction": by_direction,
         "by_bucket":    by_bucket,
+        "by_seniority": by_seniority,
     }
 
 
@@ -262,6 +275,10 @@ def format_summary(summary: dict) -> str:
     rows("By direction", summary["by_direction"])
     lines.append("")
     rows("By conviction score", summary["by_bucket"])
+    lines.append("")
+    rows("Cross-signals by insider seniority", summary["by_seniority"])
+    lines.append("")
+    lines.append("  Treat any row under ~20 scored alerts as noise, not a verdict.")
     return "\n".join(lines)
 
 
