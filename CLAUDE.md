@@ -67,3 +67,12 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ## Security Rules
 - NEVER read, write, display, or reference `.env` files or their contents.
 - If a task requires environment variables, ask the user for specific values instead of searching files.
+
+# Tool Execution Guidance
+
+- This project uses a standard Python virtual environment.
+- Do NOT use `source venv/bin/activate` or `source .venv/bin/activate`.
+- Always run Python files and tools directly using the environment path:
+  - Python: `./.venv/bin/python` (or `./venv/bin/python`)
+  - Pip: `./.venv/bin/pip` (or `./venv/bin/pip`)
+  - Pytest: `./.venv/bin/pytest`
