@@ -17,10 +17,19 @@ Public interface:
   performance_summary() -> dict
 """
 
+import random
 from datetime import datetime, timedelta
 
 import config
-from analyzer import Alert, state_read, state_write, _get_price
+from analyzer import (
+    Alert,
+    state_read,
+    state_write,
+    parse_amount_value,
+    disclosure_lag_days,
+    _get_price,
+    _trade_key,
+)
 
 
 # ── Recording ─────────────────────────────────────────────────────────────────
@@ -35,15 +44,15 @@ def _record_id(alert: Alert) -> str:
     return f"{alert.tier}|{alert.ticker}|{first}"
 
 
-def load_history() -> list[dict]:
-    """All recorded alerts, oldest first."""
-    records = state_read(config.HISTORY_FILE, [])
+def load_history(filename: str = config.HISTORY_FILE) -> list[dict]:
+    """All records in a log, oldest first."""
+    records = state_read(filename, [])
     return records if isinstance(records, list) else []
 
 
-def save_history(records: list[dict]) -> None:
+def save_history(records: list[dict], filename: str = config.HISTORY_FILE) -> None:
     """
-    Persist the alert log, keeping only the most recent HISTORY_MAX_RECORDS.
+    Persist a log, keeping only the most recent HISTORY_MAX_RECORDS.
 
     The Gist API truncates file contents past ~1MB without erroring, which would
     corrupt the log silently. At ~340 bytes per record the cap keeps the file
@@ -53,8 +62,9 @@ def save_history(records: list[dict]) -> None:
     if len(records) > config.HISTORY_MAX_RECORDS:
         dropped = len(records) - config.HISTORY_MAX_RECORDS
         records = records[-config.HISTORY_MAX_RECORDS:]
-        print(f"  ✓ Trimmed {dropped} oldest history record(s) (cap {config.HISTORY_MAX_RECORDS})")
-    state_write(config.HISTORY_FILE, records)
+        print(f"  ✓ Trimmed {dropped} oldest record(s) from {filename} "
+              f"(cap {config.HISTORY_MAX_RECORDS})")
+    state_write(filename, records)
 
 
 def record_alerts(alerts: list[Alert]) -> int:
@@ -120,6 +130,81 @@ def record_alerts(alerts: list[Alert]) -> int:
     return added
 
 
+# ── Control group ─────────────────────────────────────────────────────────────
+
+def record_control(trades: list[dict], alerts: list[Alert], today: datetime | None = None) -> int:
+    """
+    Record a sample of congressional trades that did NOT trigger an alert.
+
+    This is the null hypothesis made concrete. An alert hit rate on its own is
+    uninterpretable — if un-alerted congressional trades perform just as well,
+    the detectors contribute nothing and the headline number is merely the base
+    rate of congressional trading. Scored through exactly the same code path as
+    alerts so the comparison is like-for-like.
+
+    Sampled deterministically per day so re-running a date does not reshuffle
+    which trades were picked.
+    """
+    today = today or datetime.now()
+    fired_date = today.strftime("%Y-%m-%d")
+
+    alerted = {
+        _trade_key(t)
+        for a in alerts for t in a.trades
+        if t.get("source") != "insider"
+    }
+    eligible = [t for t in trades if _trade_key(t) not in alerted]
+    if not eligible:
+        return 0
+
+    records = load_history(config.CONTROL_FILE)
+    known   = {r["id"] for r in records}
+
+    # Deterministic per-day shuffle: stable across re-runs, varied across days.
+    rng = random.Random(fired_date)
+    rng.shuffle(eligible)
+
+    try:
+        fired_dt = datetime.strptime(fired_date, "%Y-%m-%d")
+    except ValueError:
+        return 0
+
+    added = 0
+    for t in eligible:
+        if added >= config.CONTROL_SAMPLE_PER_RUN:
+            break
+        rid = _trade_key(t)
+        if rid in known:
+            continue
+        try:
+            entry_dt = datetime.strptime(t["transaction_date"], "%Y-%m-%d")
+        except (ValueError, KeyError):
+            continue
+
+        records.append({
+            "id":               rid,
+            "fired_date":       fired_date,
+            "entry_date":       t["transaction_date"],
+            "tier":             "control",
+            "ticker":           t["ticker"],
+            "score":            0.0,
+            "direction":        "buy" if t["type"] == "purchase" else "sell",
+            "congress_dollars": parse_amount_value(t.get("amount", "")),
+            "median_lag_days":  disclosure_lag_days(t),
+            "entry_price":      _get_price(t["ticker"], entry_dt),
+            "spy_entry":        _get_price("SPY", entry_dt),
+            "fired_price":      _get_price(t["ticker"], fired_dt),
+            "spy_fired":        _get_price("SPY", fired_dt),
+        })
+        known.add(rid)
+        added += 1
+
+    if added:
+        save_history(records, config.CONTROL_FILE)
+        print(f"  ✓ Recorded {added} control trade(s)")
+    return added
+
+
 # ── Forward scoring ───────────────────────────────────────────────────────────
 
 # The two baselines a record is scored from.
@@ -133,7 +218,16 @@ BASELINES = [
 ]
 
 
-def score_history(today: datetime | None = None) -> int:
+def score_all(today: datetime | None = None) -> int:
+    """Score both the alert log and the control log. Returns the total scored."""
+    return (
+        score_history(today, config.HISTORY_FILE)
+        + score_history(today, config.CONTROL_FILE)
+    )
+
+
+def score_history(today: datetime | None = None,
+                  filename: str = config.HISTORY_FILE) -> int:
     """
     Fill in forward returns for records whose windows have elapsed.
     Returns the number of (record, baseline, window) triples newly scored.
@@ -147,7 +241,7 @@ def score_history(today: datetime | None = None) -> int:
     the signal was right by" and safe to aggregate across directions.
     """
     today   = today or datetime.now()
-    records = load_history()
+    records = load_history(filename)
     if not records:
         return 0
 
@@ -190,8 +284,8 @@ def score_history(today: datetime | None = None) -> int:
                 scored += 1
 
     if scored:
-        save_history(records)
-        print(f"  ✓ Scored {scored} alert-window(s) against SPY")
+        save_history(records, filename)
+        print(f"  ✓ Scored {scored} window(s) in {filename} against SPY")
     return scored
 
 
@@ -262,6 +356,14 @@ def performance_summary(window: int | None = None) -> dict:
         "other/dir.":  _aggregate([r for r in cross if not r.get("has_top_insider")], window),
     }
 
+    # The comparison that decides whether the detectors earn their keep:
+    # alerted trades against un-alerted ones from the same fetches.
+    control = [r for r in load_history(config.CONTROL_FILE) if "direction" in r]
+    vs_control = {
+        "alerted":   _aggregate(records, window),
+        "un-alerted": _aggregate(control, window),
+    }
+
     unmatured = sum(1 for r in records if f"edge_{window}" not in r)
     return {
         "window":       window,
@@ -272,6 +374,7 @@ def performance_summary(window: int | None = None) -> dict:
         "by_direction": by_direction,
         "by_bucket":    by_bucket,
         "by_seniority": by_seniority,
+        "vs_control":   vs_control,
     }
 
 
@@ -308,6 +411,9 @@ def format_summary(summary: dict) -> str:
                 f"{act_str}"
             )
 
+    rows("Alerted vs un-alerted (does the monitor beat picking at random?)",
+         summary["vs_control"])
+    lines.append("")
     rows("By tier", summary["by_tier"])
     lines.append("")
     rows("By direction", summary["by_direction"])
@@ -324,8 +430,8 @@ def format_summary(summary: dict) -> str:
 
 def main():
     """Score any matured records and print the performance summary."""
-    print("Scoring alert history against SPY...")
-    score_history()
+    print("Scoring alert history and control group against SPY...")
+    score_all()
     print()
     print(format_summary(performance_summary()))
 

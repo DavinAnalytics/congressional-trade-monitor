@@ -111,8 +111,11 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     print("\nSending digest...")
     send_digest(all_alerts, warnings)
 
-    # Record what fired so its forward performance can be measured later
+    # Record what fired so its forward performance can be measured later, plus a
+    # sample of trades that did NOT fire — without that baseline an alert hit
+    # rate cannot be told apart from the base rate of congressional trading.
     history.record_alerts(all_alerts)
+    history.record_control(recent, all_alerts)
 
     _banner(f"Poll complete — {len(all_alerts)} alert(s) — {_now()}")
     return all_alerts, all_trades, win_rates
@@ -215,7 +218,7 @@ Examples:
 
     if args.performance:
         _banner("Alert performance")
-        history.score_history()
+        history.score_all()
         print()
         print(history.format_summary(history.performance_summary()))
         return
@@ -234,7 +237,7 @@ Examples:
         alerts, trades, _ = poll(wide=True)
         # Score any alerts whose forward window has now elapsed, so the weekly
         # email can report whether past signals actually beat SPY.
-        history.score_history()
+        history.score_all()
         performance = history.format_summary(history.performance_summary())
         send_summary(alerts, trades, performance)
         print("\n✓ Digest sent.")

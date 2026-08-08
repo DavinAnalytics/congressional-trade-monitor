@@ -60,6 +60,17 @@ SEEN_TRADES_FILE = "seen_trades.json"
 # Lives alongside SEEN_TRADES_FILE in the same Gist (a Gist holds many files).
 HISTORY_FILE = "alert_history.json"
 
+# Congressional trades that did NOT trigger an alert, scored identically.
+# Without this baseline an alert hit rate is uninterpretable: if un-alerted
+# trades perform just as well, the detectors add nothing and the absolute
+# number is just the base rate of congressional trading.
+CONTROL_FILE = "control_trades.json"
+
+# Control trades sampled per run. The whole 45-day window is ~150 trades, far
+# too many to store every run; a sample large enough to compare against the
+# handful of alerts is enough.
+CONTROL_SAMPLE_PER_RUN = 20
+
 # ── State Retention ───────────────────────────────────────────────────────────
 # Both state files live in a Gist, and the Gist API silently truncates file
 # contents past ~1MB — which would corrupt state rather than fail loudly. Both

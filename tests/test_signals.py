@@ -642,6 +642,104 @@ def test_summary_breaks_out_by_direction(stub_state):
     assert summary["by_direction"]["sell"]["hit_rate"] == 0.0
 
 
+# ── Control group ─────────────────────────────────────────────────────────────
+
+def test_control_excludes_trades_that_triggered_an_alert(stub_state, monkeypatch):
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 100.0)
+
+    alerted   = trade(representative="A", ticker="NVDA")
+    unalerted = trade(representative="B", ticker="AAPL")
+    alert = _alert("cluster", [alerted])
+
+    history.record_control([alerted, unalerted], [alert], today=datetime(2026, 8, 8))
+
+    (rec,) = stub_state[config.CONTROL_FILE]
+    assert rec["ticker"] == "AAPL"
+    assert rec["tier"] == "control"
+
+
+def test_control_ignores_the_insider_leg_of_cross_signals(stub_state, monkeypatch):
+    """Insider rows have no _trade_key and must not break the exclusion set."""
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 100.0)
+
+    cong = trade(representative="A", ticker="NVDA", source="congress")
+    alert = _alert("cross_cluster", [cong, insider_trade()])
+
+    history.record_control([cong, trade(representative="B", ticker="AAPL")],
+                           [alert], today=datetime(2026, 8, 8))
+
+    tickers = {r["ticker"] for r in stub_state[config.CONTROL_FILE]}
+    assert tickers == {"AAPL"}
+
+
+def test_control_sample_is_capped(stub_state, monkeypatch):
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 100.0)
+    monkeypatch.setattr(config, "CONTROL_SAMPLE_PER_RUN", 5)
+
+    trades = [trade(representative=f"M{i}", ticker=f"T{i}") for i in range(50)]
+    added = history.record_control(trades, [], today=datetime(2026, 8, 8))
+
+    assert added == 5
+    assert len(stub_state[config.CONTROL_FILE]) == 5
+
+
+def test_control_sampling_is_stable_for_a_given_day(stub_state, monkeypatch):
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 100.0)
+    monkeypatch.setattr(config, "CONTROL_SAMPLE_PER_RUN", 5)
+    trades = [trade(representative=f"M{i}", ticker=f"T{i}") for i in range(50)]
+
+    history.record_control(trades, [], today=datetime(2026, 8, 8))
+    first = [r["id"] for r in stub_state[config.CONTROL_FILE]]
+
+    stub_state[config.CONTROL_FILE] = []
+    history.record_control(trades, [], today=datetime(2026, 8, 8))
+    assert [r["id"] for r in stub_state[config.CONTROL_FILE]] == first
+
+
+def test_control_records_direction_so_sells_invert(stub_state, monkeypatch):
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 100.0)
+    history.record_control(
+        [trade(representative="A", ticker="X", type="sale")], [],
+        today=datetime(2026, 8, 8),
+    )
+    (rec,) = stub_state[config.CONTROL_FILE]
+    assert rec["direction"] == "sell"
+
+
+def test_summary_compares_alerted_against_unalerted(stub_state):
+    """The verdict on the detectors: do alerts beat trades that didn't alert?"""
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "a", "tier": "cluster", "ticker": "A", "score": 70.0,
+         "direction": "buy", f"edge_{w}": 6.0, f"act_edge_{w}": 2.0},
+    ]
+    stub_state[config.CONTROL_FILE] = [
+        {"id": "c1", "tier": "control", "ticker": "C", "score": 0.0,
+         "direction": "buy", f"edge_{w}": 5.0, f"act_edge_{w}": 1.8},
+        {"id": "c2", "tier": "control", "ticker": "D", "score": 0.0,
+         "direction": "buy", f"edge_{w}": 7.0, f"act_edge_{w}": 2.2},
+    ]
+    vs = history.performance_summary()["vs_control"]
+
+    assert vs["alerted"]["avg_edge"] == pytest.approx(6.0)
+    assert vs["un-alerted"]["avg_edge"] == pytest.approx(6.0)   # detectors add nothing
+    assert "un-alerted" in history.format_summary(history.performance_summary())
+
+
+def test_score_all_scores_both_logs(stub_state, monkeypatch):
+    base = {"entry_date": "2026-01-01", "entry_price": 100.0, "spy_entry": 400.0,
+            "direction": "buy", "ticker": "NVDA", "tier": "x", "score": 0.0}
+    stub_state[config.HISTORY_FILE] = [{**base, "id": "a"}]
+    stub_state[config.CONTROL_FILE] = [{**base, "id": "c"}]
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 120.0 if t == "NVDA" else 420.0)
+
+    history.score_all(today=datetime(2026, 9, 1))
+
+    w = config.WIN_RATE_PRIMARY
+    assert f"edge_{w}" in stub_state[config.HISTORY_FILE][0]
+    assert f"edge_{w}" in stub_state[config.CONTROL_FILE][0]
+
+
 # ── Actionable vs trade-date baseline ─────────────────────────────────────────
 
 def test_actionable_baseline_scores_from_the_alert_date(stub_state, monkeypatch):

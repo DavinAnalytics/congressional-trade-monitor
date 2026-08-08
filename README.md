@@ -181,6 +181,7 @@ Both are handled by a single `monitor.yml` workflow. The script checks the day o
 |------|-------|-----------|
 | `seen_trades.json` | Keys whose newest trade date is older than `SEEN_RETENTION_DAYS` (120) are pruned on every save | Alerts only fire on trades inside `FETCH_DAYS` (45), so older keys can never re-match. The margin absorbs late and amended filings. Keys with no parseable date are always kept — dropping a live key would re-alert it. |
 | `alert_history.json` | Newest `HISTORY_MAX_RECORDS` (3000) retained | Roughly a year of alerts, far more than the 30–90 days needed to calibrate `SCORE_WEIGHTS`. |
+| `control_trades.json` | Same cap; `CONTROL_SAMPLE_PER_RUN` (20) sampled per run | The un-alerted comparison group. |
 
 **Manual trigger:** The workflow has a `workflow_dispatch` trigger. You can run it on demand from the GitHub Actions tab at any time.
 
@@ -354,6 +355,8 @@ Alert performance vs SPY over 60 days
     CEO/CFO           5 scored · trade-date 80% / +6.1% · actionable 60% / +2.2%
     other/dir.        4 scored · trade-date 50% / +1.0% · actionable 25% / -0.9%
 ```
+
+**The control group.** Every run also records a sample of congressional trades that did **not** trigger an alert (`control_trades.json`), scored through the identical code path. This is the null hypothesis made concrete: an alert hit rate on its own is uninterpretable, because if un-alerted trades perform just as well then the detectors contribute nothing and the headline number is merely the base rate of congressional trading. `--performance` leads with the comparison.
 
 **Two baselines.** Every record is scored twice. `entry_*` measures from the politician's trade date — it answers "was their trade good". `act_*` measures from the day the alert actually reached you, which is the first moment you could have acted. Because disclosure lags by up to 45 days, the trade-date figure includes a return you had no way to capture; the gap between the two *is* the cost of disclosure lag. **Only the actionable column says whether the monitor is worth running.**
 
