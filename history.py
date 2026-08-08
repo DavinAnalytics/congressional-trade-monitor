@@ -289,6 +289,83 @@ def score_history(today: datetime | None = None,
     return scored
 
 
+# ── Significance ──────────────────────────────────────────────────────────────
+
+def _percentile(sorted_values: list[float], p: float) -> float:
+    """Linear-interpolated percentile of an already-sorted list."""
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    pos = p * (len(sorted_values) - 1)
+    lo  = int(pos)
+    hi  = min(lo + 1, len(sorted_values) - 1)
+    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (pos - lo)
+
+
+def bootstrap(values: list[float], seed: str = "edge") -> dict | None:
+    """
+    Confidence interval for the mean of `values`, by resampling.
+
+    An average edge cannot on its own be told apart from luck: with a handful of
+    alerts and normal market noise, +2% arises by chance routinely. This draws
+    len(values) samples *with replacement* many times over, giving a spread of
+    averages the same data could plausibly have produced. If most of that spread
+    sits above zero, the effect is real; if it straddles zero, there is no
+    evidence either way — however good the headline number looks.
+
+    Seeded, so the same records always give the same interval rather than
+    jittering week to week.
+
+    Returns None below BOOTSTRAP_MIN_SAMPLES, where the answer would be theatre.
+    """
+    n = len(values)
+    if n < config.BOOTSTRAP_MIN_SAMPLES:
+        return None
+
+    rng   = random.Random(seed)
+    means = []
+    for _ in range(config.BOOTSTRAP_ITERATIONS):
+        total = 0.0
+        for _ in range(n):
+            total += values[rng.randrange(n)]
+        means.append(total / n)
+    means.sort()
+
+    return {
+        "mean":       sum(values) / n,
+        "ci_low":     _percentile(means, 0.025),
+        "ci_high":    _percentile(means, 0.975),
+        # Share of resamples above zero — how confident "this is positive" is.
+        "confidence": sum(1 for m in means if m > 0) / len(means),
+    }
+
+
+def bootstrap_difference(a: list[float], b: list[float], seed: str = "diff") -> dict | None:
+    """
+    Confidence interval for mean(a) − mean(b), resampling each group separately.
+
+    This is the sharpest question the data can answer: not "did alerts make
+    money" but "did alerts beat the trades that never alerted". If this interval
+    straddles zero, the detectors have not been shown to add anything.
+    """
+    if len(a) < config.BOOTSTRAP_MIN_SAMPLES or len(b) < config.BOOTSTRAP_MIN_SAMPLES:
+        return None
+
+    rng   = random.Random(seed)
+    diffs = []
+    for _ in range(config.BOOTSTRAP_ITERATIONS):
+        ma = sum(a[rng.randrange(len(a))] for _ in range(len(a))) / len(a)
+        mb = sum(b[rng.randrange(len(b))] for _ in range(len(b))) / len(b)
+        diffs.append(ma - mb)
+    diffs.sort()
+
+    return {
+        "mean":       sum(a) / len(a) - sum(b) / len(b),
+        "ci_low":     _percentile(diffs, 0.025),
+        "ci_high":    _percentile(diffs, 0.975),
+        "confidence": sum(1 for d in diffs if d > 0) / len(diffs),
+    }
+
+
 # ── Aggregation ───────────────────────────────────────────────────────────────
 
 SCORE_BUCKETS = [("0-40", 0, 40), ("40-70", 40, 70), ("70+", 70, 101)]
@@ -315,6 +392,40 @@ def _aggregate(records: list[dict], window: int) -> dict:
     out = _stats(records, f"edge_{window}")
     out["actionable"] = _stats(records, f"act_edge_{window}")
     return out
+
+
+def _edges(records: list[dict], window: int, prefix: str = "act_") -> list[float]:
+    key = f"{prefix}edge_{window}"
+    return [r[key] for r in records if key in r]
+
+
+def horizon_view(records: list[dict], prefix: str = "act_") -> dict:
+    """
+    Average edge at every horizon in WIN_RATE_WINDOWS, plus whether they agree.
+
+    A genuine signal tends to point the same way at one, two and three months.
+    An effect that appears at exactly one horizon and vanishes at the others is
+    almost always the window happening to land on a lucky stretch — so reading
+    across all three guards against quoting whichever column flatters the
+    result. The horizons are already stored, so this costs nothing.
+    """
+    per_window = {}
+    for w in config.WIN_RATE_WINDOWS:
+        edges = _edges(records, w, prefix)
+        per_window[w] = {
+            "n":        len(edges),
+            "avg_edge": (sum(edges) / len(edges)) if edges else None,
+        }
+
+    signs = {
+        (v["avg_edge"] > 0) for v in per_window.values()
+        if v["avg_edge"] is not None and v["n"] >= config.BOOTSTRAP_MIN_SAMPLES
+    }
+    return {
+        "per_window": per_window,
+        # None when there isn't enough data at enough horizons to judge.
+        "consistent": (len(signs) == 1) if signs else None,
+    }
 
 
 def performance_summary(window: int | None = None) -> dict:
@@ -364,9 +475,21 @@ def performance_summary(window: int | None = None) -> dict:
         "un-alerted": _aggregate(control, window),
     }
 
+    # Significance, always on the actionable baseline — the only one that speaks
+    # to whether the monitor is worth running.
+    alert_edges   = _edges(records, window)
+    control_edges = _edges(control, window)
+    significance = {
+        "alerted":    bootstrap(alert_edges, seed="alerted"),
+        "un-alerted": bootstrap(control_edges, seed="control"),
+        "difference": bootstrap_difference(alert_edges, control_edges, seed="diff"),
+    }
+
     unmatured = sum(1 for r in records if f"edge_{window}" not in r)
     return {
         "window":       window,
+        "significance": significance,
+        "horizons":     horizon_view(records),
         "total":        len(records),
         "unmatured":    unmatured,
         "legacy":       legacy,
@@ -421,6 +544,47 @@ def format_summary(summary: dict) -> str:
     rows("By conviction score", summary["by_bucket"])
     lines.append("")
     rows("Cross-signals by insider seniority", summary["by_seniority"])
+
+    # ── Significance ──
+    lines += ["", "  Is the actionable edge real, or luck?"]
+    labels = {
+        "alerted":    "alerted",
+        "un-alerted": "un-alerted",
+        "difference": "alerted − un-alerted",
+    }
+    for key, label in labels.items():
+        b = summary["significance"].get(key)
+        if not b:
+            lines.append(f"    {label:<21} too few scored alerts to say "
+                         f"(need {config.BOOTSTRAP_MIN_SAMPLES}+)")
+            continue
+        verdict = (
+            "REAL — interval clears zero" if b["ci_low"] > 0 else
+            "negative — interval below zero" if b["ci_high"] < 0 else
+            "no evidence — interval straddles zero"
+        )
+        lines.append(
+            f"    {label:<21} {b['mean']:+.1f}% "
+            f"(95% CI {b['ci_low']:+.1f}% to {b['ci_high']:+.1f}%) · {verdict}"
+        )
+    lines.append("    The last row is the verdict on the detectors themselves.")
+
+    # ── Horizon consistency ──
+    h = summary["horizons"]
+    lines += ["", "  Does the edge hold across horizons? (real signals do)"]
+    for w, s in h["per_window"].items():
+        if s["avg_edge"] is None:
+            lines.append(f"    {w:>3}d  no matured alerts yet")
+        else:
+            lines.append(f"    {w:>3}d  {s['avg_edge']:+.1f}% avg edge ({s['n']} scored)")
+    if h["consistent"] is None:
+        lines.append("    Not enough data at enough horizons to judge yet.")
+    elif h["consistent"]:
+        lines.append("    Consistent — same direction at every horizon.")
+    else:
+        lines.append("    MIXED — the edge flips sign between horizons, which usually "
+                     "means noise rather than a real effect.")
+
     lines.append("")
     lines.append("  Treat any row under ~20 scored alerts as noise, not a verdict.")
     return "\n".join(lines)

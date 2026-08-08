@@ -642,6 +642,83 @@ def test_summary_breaks_out_by_direction(stub_state):
     assert summary["by_direction"]["sell"]["hit_rate"] == 0.0
 
 
+# ── Significance & horizons ───────────────────────────────────────────────────
+
+def test_bootstrap_flags_a_clear_positive_effect():
+    b = history.bootstrap([8.0, 9.0, 10.0, 11.0, 12.0, 9.5, 10.5, 8.5])
+    assert b["ci_low"] > 0
+    assert b["confidence"] > 0.95
+
+
+def test_bootstrap_finds_no_evidence_in_noise():
+    """A positive average that luck explains easily must not read as real."""
+    b = history.bootstrap([12.0, -11.0, 9.0, -8.0, 14.0, -13.0, 2.0, -3.0])
+    assert b["mean"] > 0
+    assert b["ci_low"] < 0 < b["ci_high"]     # straddles zero
+    assert b["confidence"] < 0.95
+
+
+def test_bootstrap_returns_none_below_minimum_samples():
+    assert history.bootstrap([1.0, 2.0]) is None
+
+
+def test_bootstrap_is_deterministic():
+    """The interval must not jitter between runs on identical data."""
+    v = [3.0, -1.0, 5.0, 2.0, -2.0, 4.0]
+    assert history.bootstrap(v) == history.bootstrap(v)
+
+
+def test_bootstrap_difference_detects_no_separation():
+    """Identical populations: the detectors add nothing."""
+    same = [5.0, -2.0, 7.0, 1.0, -4.0, 3.0]
+    d = history.bootstrap_difference(same, list(same))
+    assert d["ci_low"] < 0 < d["ci_high"]
+
+
+def test_bootstrap_difference_detects_real_separation():
+    alerted   = [10.0, 11.0, 12.0, 9.0, 10.5, 11.5, 10.0, 12.0]
+    unalerted = [0.5, -1.0, 0.0, 1.0, -0.5, 0.2, 0.1, -0.2]
+    d = history.bootstrap_difference(alerted, unalerted)
+    assert d["ci_low"] > 0
+    assert d["confidence"] > 0.95
+
+
+def test_horizon_view_reports_consistency():
+    recs = [{f"act_edge_{w}": 5.0 for w in config.WIN_RATE_WINDOWS} for _ in range(6)]
+    h = history.horizon_view(recs)
+    assert h["consistent"] is True
+    assert h["per_window"][config.WIN_RATE_PRIMARY]["avg_edge"] == pytest.approx(5.0)
+
+
+def test_horizon_view_flags_a_sign_flip():
+    """Edge at one horizon only is the classic false positive."""
+    recs = [{"act_edge_30": -2.0, "act_edge_60": 6.0, "act_edge_90": -1.0} for _ in range(6)]
+    assert history.horizon_view(recs)["consistent"] is False
+
+
+def test_horizon_view_is_undecided_without_enough_data():
+    assert history.horizon_view([{"act_edge_60": 5.0}])["consistent"] is None
+
+
+def test_summary_renders_significance_and_horizons(stub_state):
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": f"a{i}", "tier": "cluster", "ticker": "A", "score": 70.0,
+         "direction": "buy", f"edge_{w}": 5.0, f"act_edge_{w}": 4.0}
+        for i in range(8)
+    ]
+    stub_state[config.CONTROL_FILE] = [
+        {"id": f"c{i}", "tier": "control", "ticker": "C", "score": 0.0,
+         "direction": "buy", f"edge_{w}": 0.0, f"act_edge_{w}": 0.0}
+        for i in range(8)
+    ]
+    out = history.format_summary(history.performance_summary())
+
+    assert "Is the actionable edge real, or luck?" in out
+    assert "alerted − un-alerted" in out
+    assert "Does the edge hold across horizons?" in out
+
+
 # ── Control group ─────────────────────────────────────────────────────────────
 
 def test_control_excludes_trades_that_triggered_an_alert(stub_state, monkeypatch):

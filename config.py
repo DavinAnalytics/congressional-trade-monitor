@@ -71,6 +71,15 @@ CONTROL_FILE = "control_trades.json"
 # handful of alerts is enough.
 CONTROL_SAMPLE_PER_RUN = 20
 
+# ── Significance testing ──────────────────────────────────────────────────────
+
+# Resamples used to put a confidence interval around an average edge. An average
+# on its own cannot distinguish a real effect from luck; the interval can.
+BOOTSTRAP_ITERATIONS = 5_000
+
+# Below this many scored alerts, a bootstrap is theatre — report "too few" instead.
+BOOTSTRAP_MIN_SAMPLES = 5
+
 # ── State Retention ───────────────────────────────────────────────────────────
 # Both state files live in a Gist, and the Gist API silently truncates file
 # contents past ~1MB — which would corrupt state rather than fail loudly. Both
