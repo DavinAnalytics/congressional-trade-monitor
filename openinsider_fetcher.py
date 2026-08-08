@@ -16,6 +16,7 @@ Public interface: fetch_all(days) -> list[dict]
 
 import os
 import re
+import time
 import requests
 import yfinance as yf
 from bs4 import BeautifulSoup
@@ -27,6 +28,24 @@ import config
 
 MIN_TRADE_VALUE  = 50_000                                     # drop sub-$50k buys (micro-cap noise)
 MIN_MARKET_CAP_M = int(os.getenv("MIN_MARKET_CAP_M", "300"))  # $M floor; override via .env
+
+# openinsider is a single unauthenticated endpoint and does time out in practice.
+# A failed fetch silently disables cross-signal detection for the whole run, so
+# it is worth a few retries before giving up.
+FETCH_ATTEMPTS        = 3
+FETCH_BACKOFF_SECONDS = 5
+FETCH_TIMEOUT_SECONDS = 30
+
+
+class InsiderFetchError(RuntimeError):
+    """
+    openinsider could not be reached after retries.
+
+    Deliberately distinct from returning an empty list: "the feed is down" makes
+    cross-signals impossible, while "no insiders bought anything" is a real
+    market observation. Collapsing the two silently switches off the strongest
+    signal in the monitor with no indication that anything went wrong.
+    """
 
 # Pre-filtered screener: open-market buys, CEO + CFO, last 45 days, 100 rows.
 SCREENER_URL = (
@@ -115,22 +134,43 @@ def _parse_screener(html: str) -> list[dict]:
     return trades
 
 
+# ── Fetching ──────────────────────────────────────────────────────────────────
+
+def _get_screener_html() -> str:
+    """
+    GET the screener page, retrying with linear backoff.
+    Raises InsiderFetchError if every attempt fails.
+    """
+    last_error = None
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            resp = requests.get(SCREENER_URL, headers=HEADERS, timeout=FETCH_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            return resp.text
+        except Exception as e:
+            last_error = e
+            if attempt < FETCH_ATTEMPTS:
+                wait = FETCH_BACKOFF_SECONDS * attempt
+                print(f"  ⚠ openinsider attempt {attempt}/{FETCH_ATTEMPTS} failed ({e}) — retrying in {wait}s")
+                time.sleep(wait)
+
+    raise InsiderFetchError(
+        f"openinsider unreachable after {FETCH_ATTEMPTS} attempts: {last_error}"
+    )
+
+
 # ── Unified entry point ───────────────────────────────────────────────────────
 
 def fetch_all(days: int = config.FETCH_DAYS) -> list[dict]:
     """
     Fetch CEO/CFO open-market buys from openinsider.com.
     Returns normalized insider trade dicts sorted by transaction_date desc.
+
+    Raises InsiderFetchError if the feed is unreachable — callers must not treat
+    that as "no insider buys", since it makes cross-signals impossible.
     """
     print("Fetching insider data from openinsider.com...")
-    try:
-        resp = requests.get(SCREENER_URL, headers=HEADERS, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"  ⚠ Could not fetch openinsider: {e}")
-        return []
-
-    trades = _parse_screener(resp.text)
+    trades = _parse_screener(_get_screener_html())
 
     # Defensive window filter (the URL already constrains to fd=45).
     cutoff = datetime.now() - timedelta(days=days)

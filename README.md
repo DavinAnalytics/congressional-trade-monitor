@@ -305,6 +305,10 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
 }
 ```
 
+**Feed resilience.** openinsider is a single unauthenticated endpoint and does time out in practice. The fetch retries `FETCH_ATTEMPTS` (3) times with linear backoff; if every attempt fails it raises `InsiderFetchError` rather than returning an empty list.
+
+That distinction matters: "the feed is down" makes cross-signals impossible, while "no insiders bought anything" is a real market observation, and collapsing the two silently switches off the strongest signal in the monitor. Callers degrade rather than crash — `monitor.poll()` continues with congressional alerts and prints `CROSS-SIGNAL DETECTION DISABLED FOR THIS RUN`, passing a warning banner into the digest email so a thin digest is never mistaken for a quiet market; the dashboard shows `st.warning` and renders its remaining panels.
+
 **Noise filtering at the scraper boundary** (so analyzer, notifier, and dashboard all receive a clean list):
 - **Minimum trade value** — drops buys under `MIN_TRADE_VALUE` ($50k), removing micro-cap penny-stock noise.
 - **Minimum market cap** — the OpenInsider screener exposes no market-cap parameter, so market cap is looked up per unique ticker via yfinance and buys under `MIN_MARKET_CAP_M` ($300M, overridable via the `MIN_MARKET_CAP_M` env var) are dropped. Tickers with no market-cap data are kept, so a transient yfinance miss never silently discards a legitimate large-cap.

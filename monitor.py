@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 import config
 import history
 from fetcher            import fetch_all
-from openinsider_fetcher import fetch_all as fetch_insider
+from openinsider_fetcher import fetch_all as fetch_insider, InsiderFetchError
 from analyzer           import analyze, analyze_cross_cluster, compute_win_rates, enrich_and_score
 from notifier           import send_digest, send_summary
 from committees         import load_all as load_committees
@@ -73,9 +73,22 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     else:
         recent = all_trades
 
-    # Fetch insider (CEO/CFO) open-market buys for cross-cluster detection
+    # Fetch insider (CEO/CFO) open-market buys for cross-cluster detection.
+    # A feed outage must not masquerade as "no insiders bought anything" — carry
+    # on with the congressional alerts, but say plainly that cross-signals could
+    # not run this cycle.
     print("\nFetching insider buys...")
-    insider_trades = fetch_insider(days=config.FETCH_DAYS)
+    warnings = []
+    try:
+        insider_trades = fetch_insider(days=config.FETCH_DAYS)
+    except InsiderFetchError as e:
+        insider_trades = []
+        warnings.append(
+            "Insider feed unavailable this run — cross-signals could not be detected. "
+            "Congressional alerts below are unaffected."
+        )
+        print(f"  ⚠ {e}")
+        print("  ⚠ CROSS-SIGNAL DETECTION DISABLED FOR THIS RUN")
 
     # Analyze
     print("\nAnalyzing...")
@@ -96,7 +109,7 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
 
     # Send one ranked digest
     print("\nSending digest...")
-    send_digest(all_alerts)
+    send_digest(all_alerts, warnings)
 
     # Record what fired so its forward performance can be measured later
     history.record_alerts(all_alerts)

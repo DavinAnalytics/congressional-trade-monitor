@@ -456,16 +456,23 @@ def _alert_card(alert: Alert, rank: int, with_ai: bool) -> tuple[str, str]:
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-def send_digest(alerts: list[Alert]) -> None:
+def send_digest(alerts: list[Alert], warnings: list[str] | None = None) -> None:
     """
     Send every alert from a run as one email, ranked by conviction score.
 
     One email per alert meant a busy day produced a dozen messages that all went
     unread. Ranking puts the strongest signal in the subject line so the inbox
     alone is enough to triage.
+
+    `warnings` carries degradations that make the digest incomplete — a feed
+    outage, say — so a thin digest is never mistaken for a quiet market.
     """
+    warnings = warnings or []
+
     if not alerts:
         print("  No alerts to send.")
+        for w in warnings:
+            print(f"  ⚠ {w}")
         return
 
     ranked = sorted(alerts, key=lambda a: a.score, reverse=True)
@@ -487,14 +494,26 @@ def send_digest(alerts: list[Alert]) -> None:
         for i, a in enumerate(ranked)
     ]
 
+    warning_text = "".join(f"\n⚠ {w}\n" for w in warnings)
     text = (
         "CONGRESSIONAL TRADE MONITOR — Signal Digest\n"
         f"{datetime.now().strftime('%B %d, %Y %H:%M')}\n"
         f"{'='*60}\n"
         f"{len(ranked)} alert(s): {breakdown}\n"
-        "Ranked by conviction score (size, participants, freshness, track record).\n\n"
+        "Ranked by conviction score (size, participants, freshness, track record).\n"
+        f"{warning_text}\n"
         + "\n\n".join(t for t, _ in cards)
     )
+
+    warning_html = ""
+    if warnings:
+        items = "".join(
+            f'<p style="margin:4px 0;font-size:13px;color:#7f1d1d;">⚠ {escape(w)}</p>'
+            for w in warnings
+        )
+        warning_html = f"""
+      <div style="margin:0 0 16px;padding:12px 14px;background:#fef2f2;border-radius:6px;
+                  border-left:4px solid #dc2626;">{items}</div>"""
 
     body = f"""
       <p style="font-size:14px;color:#374151;margin:0 0 4px;">
@@ -504,7 +523,7 @@ def send_digest(alerts: list[Alert]) -> None:
         Ranked by conviction score: disclosed size, participant count, disclosure
         freshness, and member track record.
       </p>
-      {''.join(h for _, h in cards)}"""
+      {warning_html}{''.join(h for _, h in cards)}"""
 
     html = _base_html(
         title  = f"{len(ranked)} Signal{'s' if len(ranked) != 1 else ''} — top: {top.ticker}",

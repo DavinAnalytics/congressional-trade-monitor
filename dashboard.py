@@ -26,7 +26,7 @@ st.markdown(
 )
 
 from fetcher import fetch_all
-from openinsider_fetcher import fetch_all as fetch_insider
+from openinsider_fetcher import fetch_all as fetch_insider, InsiderFetchError
 from analyzer import (
     compute_win_rates,
     detect_cluster_alerts,
@@ -64,7 +64,13 @@ def _filter_trades(days: int) -> list[dict]:
 @st.cache_data(ttl="1h")
 def _fetch_insider_raw() -> list[dict]:
     # openinsider feed is fixed at the last 45 days; days window filters in memory.
-    return fetch_insider(days=MAX_DAYS)
+    # A feed outage degrades the insider panels rather than taking down the whole
+    # page, but it is surfaced — an empty panel must not read as "no insider buys".
+    try:
+        return fetch_insider(days=MAX_DAYS)
+    except InsiderFetchError as e:
+        st.warning(f"Insider feed unavailable — cross-signals cannot be shown. ({e})")
+        return []
 
 
 def _filter_insider(days: int) -> list[dict]:

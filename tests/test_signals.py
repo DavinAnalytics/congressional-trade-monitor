@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import analyzer
 import config
 import history
+import notifier
+import openinsider_fetcher
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -531,6 +533,91 @@ def test_price_cache_evicts_when_full(monkeypatch):
     assert len(analyzer._PRICE_CACHE) <= 100
     # The most recent write always survives eviction.
     assert analyzer._PRICE_CACHE[("T", "2026-01-149", "first")] == 149.0
+
+
+# ── Insider feed resilience ───────────────────────────────────────────────────
+
+class _Resp:
+    def __init__(self, text): self.text = text
+    def raise_for_status(self): pass
+
+
+def test_screener_retries_then_succeeds(monkeypatch):
+    """A transient timeout should not cost the whole run's cross-signals."""
+    monkeypatch.setattr(openinsider_fetcher.time, "sleep", lambda s: None)
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) < 3:
+            raise TimeoutError("read timed out")
+        return _Resp("<html>ok</html>")
+
+    monkeypatch.setattr(openinsider_fetcher.requests, "get", flaky)
+
+    assert openinsider_fetcher._get_screener_html() == "<html>ok</html>"
+    assert len(calls) == 3
+
+
+def test_screener_raises_after_exhausting_attempts(monkeypatch):
+    monkeypatch.setattr(openinsider_fetcher.time, "sleep", lambda s: None)
+    calls = []
+
+    def always_fail(*a, **k):
+        calls.append(1)
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(openinsider_fetcher.requests, "get", always_fail)
+
+    with pytest.raises(openinsider_fetcher.InsiderFetchError, match="unreachable"):
+        openinsider_fetcher._get_screener_html()
+    assert len(calls) == openinsider_fetcher.FETCH_ATTEMPTS
+
+
+def test_outage_is_not_an_empty_result(monkeypatch):
+    """
+    The bug this guards: fetch_all used to swallow the error and return [],
+    making a dead feed indistinguishable from a day with no insider buys.
+    """
+    monkeypatch.setattr(openinsider_fetcher.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        openinsider_fetcher.requests, "get",
+        lambda *a, **k: (_ for _ in ()).throw(TimeoutError("read timed out")),
+    )
+
+    with pytest.raises(openinsider_fetcher.InsiderFetchError):
+        openinsider_fetcher.fetch_all(days=45)
+
+
+def test_digest_surfaces_warnings(monkeypatch):
+    """A thin digest during an outage must say why, not look like a quiet market."""
+    sent = {}
+    monkeypatch.setattr(notifier, "_send_email",
+                        lambda subj, text, html: sent.update(subject=subj, text=text, html=html))
+    monkeypatch.setattr(notifier, "generate_alert_context", lambda *a, **k: None)
+    monkeypatch.setattr(notifier, "_alert_conflicts", lambda alert: [])
+
+    alert = _alert("cluster", [trade(representative="A"), trade(representative="B")])
+    analyzer.enrich_and_score(alert, win_rates={})
+
+    notifier.send_digest([alert], warnings=["Insider feed unavailable this run."])
+
+    assert "Insider feed unavailable this run." in sent["text"]
+    assert "Insider feed unavailable this run." in sent["html"]
+
+
+def test_digest_without_warnings_has_no_warning_block(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(notifier, "_send_email",
+                        lambda subj, text, html: sent.update(text=text, html=html))
+    monkeypatch.setattr(notifier, "generate_alert_context", lambda *a, **k: None)
+    monkeypatch.setattr(notifier, "_alert_conflicts", lambda alert: [])
+
+    alert = _alert("cluster", [trade(representative="A")])
+    analyzer.enrich_and_score(alert, win_rates={})
+
+    notifier.send_digest([alert])
+    assert "⚠" not in sent["text"]
 
 
 def test_format_summary_handles_empty_history(stub_state):
