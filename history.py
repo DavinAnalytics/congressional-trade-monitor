@@ -85,12 +85,15 @@ def record_alerts(alerts: list[Alert]) -> int:
             "id":              rid,
             "fired_date":      alert.fired_at[:10],
             "entry_date":      entry_date,
-            "tier":            alert.tier,
-            "ticker":          alert.ticker,
-            "score":           alert.score,
-            "n_members":       alert.meta.get("n_members", 0),
-            "n_insiders":      alert.meta.get("n_insiders", 0),
-            "dollar_total":    alert.meta.get("dollar_total", 0.0),
+            "tier":             alert.tier,
+            "ticker":           alert.ticker,
+            "score":            alert.score,
+            "direction":        alert.meta.get("direction", "buy"),
+            "n_members":        alert.meta.get("n_members", 0),
+            "n_insiders":       alert.meta.get("n_insiders", 0),
+            "congress_dollars": alert.meta.get("congress_dollars", 0.0),
+            "insider_dollars":  alert.meta.get("insider_dollars", 0.0),
+            "dollar_total":     alert.meta.get("dollar_total", 0.0),
             "median_lag_days": alert.meta.get("median_lag_days"),
             "entry_price":     _get_price(alert.ticker, entry_dt),
             "spy_entry":       _get_price("SPY", entry_dt),
@@ -112,8 +115,13 @@ def score_history(today: datetime | None = None) -> int:
     Returns the number of (record, window) pairs newly scored.
 
     Each window gets ret_N (the ticker's return), spy_N (SPY's return over the
-    same span) and excess_N. Excess is the number that matters — beating SPY is
-    the bar, since buying the index required no signal at all.
+    same span), excess_N (ret minus SPY) and edge_N.
+
+    edge_N is the number that matters. Excess alone answers "did the stock beat
+    SPY", which is only the right question for a buy signal: a sell cluster
+    predicts *under*performance, so a stock that beats SPY means the signal was
+    wrong. edge_N flips the sign for sells, making it read uniformly as "how much
+    the signal was right by" and safe to aggregate across directions.
     """
     today   = today or datetime.now()
     records = load_history()
@@ -132,8 +140,10 @@ def score_history(today: datetime | None = None) -> int:
         except (ValueError, KeyError):
             continue
 
+        sign = -1 if r.get("direction") == "sell" else 1
+
         for window in config.WIN_RATE_WINDOWS:
-            key = f"excess_{window}"
+            key = f"edge_{window}"
             if key in r:
                 continue  # already scored
 
@@ -148,9 +158,11 @@ def score_history(today: datetime | None = None) -> int:
 
             ret = (price_exit - entry_price) / entry_price * 100
             spy = (spy_exit - spy_entry) / spy_entry * 100
-            r[f"ret_{window}"] = round(ret, 2)
-            r[f"spy_{window}"] = round(spy, 2)
-            r[key]             = round(ret - spy, 2)
+            excess = ret - spy
+            r[f"ret_{window}"]    = round(ret, 2)
+            r[f"spy_{window}"]    = round(spy, 2)
+            r[f"excess_{window}"] = round(excess, 2)
+            r[key]                = round(sign * excess, 2)
             scored += 1
 
     if scored:
@@ -165,14 +177,14 @@ SCORE_BUCKETS = [("0-40", 0, 40), ("40-70", 40, 70), ("70+", 70, 101)]
 
 
 def _aggregate(records: list[dict], window: int) -> dict:
-    """Count, SPY-beat rate, and mean excess return for one set of records."""
-    excess = [r[f"excess_{window}"] for r in records if f"excess_{window}" in r]
-    if not excess:
-        return {"n": 0, "beat_spy": None, "avg_excess": None}
+    """Count, hit rate, and mean edge for one set of records."""
+    edges = [r[f"edge_{window}"] for r in records if f"edge_{window}" in r]
+    if not edges:
+        return {"n": 0, "hit_rate": None, "avg_edge": None}
     return {
-        "n":          len(excess),
-        "beat_spy":   sum(1 for e in excess if e > 0) / len(excess),
-        "avg_excess": sum(excess) / len(excess),
+        "n":        len(edges),
+        "hit_rate": sum(1 for e in edges if e > 0) / len(edges),
+        "avg_edge": sum(edges) / len(edges),
     }
 
 
@@ -185,24 +197,37 @@ def performance_summary(window: int | None = None) -> dict:
     bucket does not beat the 0-40 bucket, the weights in config are wrong.
     """
     window  = window or config.WIN_RATE_PRIMARY
-    records = load_history()
+    all_records = load_history()
+
+    # Records written before direction tracking cannot be scored as right or
+    # wrong — a sell alert and a buy alert with the same excess mean opposite
+    # things. Excluding them is the only honest option; counting them would
+    # invert every sell.
+    records = [r for r in all_records if "direction" in r]
+    legacy  = len(all_records) - len(records)
 
     by_tier = {}
     for tier in sorted({r["tier"] for r in records}):
         by_tier[tier] = _aggregate([r for r in records if r["tier"] == tier], window)
+
+    by_direction = {}
+    for d in sorted({r["direction"] for r in records}):
+        by_direction[d] = _aggregate([r for r in records if r["direction"] == d], window)
 
     by_bucket = {}
     for label, lo, hi in SCORE_BUCKETS:
         in_bucket = [r for r in records if lo <= r.get("score", 0) < hi]
         by_bucket[label] = _aggregate(in_bucket, window)
 
-    unmatured = sum(1 for r in records if f"excess_{window}" not in r)
+    unmatured = sum(1 for r in records if f"edge_{window}" not in r)
     return {
-        "window":    window,
-        "total":     len(records),
-        "unmatured": unmatured,
-        "by_tier":   by_tier,
-        "by_bucket": by_bucket,
+        "window":       window,
+        "total":        len(records),
+        "unmatured":    unmatured,
+        "legacy":       legacy,
+        "by_tier":      by_tier,
+        "by_direction": by_direction,
+        "by_bucket":    by_bucket,
     }
 
 
@@ -211,8 +236,11 @@ def format_summary(summary: dict) -> str:
     lines = [
         f"Alert performance vs SPY over {summary['window']} days",
         f"  {summary['total']} recorded · {summary['unmatured']} still maturing",
-        "",
+        "  Edge = how far the signal was right (sells inverted, so higher is better)",
     ]
+    if summary.get("legacy"):
+        lines.append(f"  {summary['legacy']} pre-direction record(s) excluded as unscoreable")
+    lines.append("")
 
     def rows(title: str, group: dict) -> None:
         lines.append(f"  {title}")
@@ -225,11 +253,13 @@ def format_summary(summary: dict) -> str:
             else:
                 lines.append(
                     f"    {name:<16} {s['n']:>3} scored · "
-                    f"{s['beat_spy']:.0%} beat SPY · "
-                    f"{s['avg_excess']:+.1f}% avg excess"
+                    f"{s['hit_rate']:.0%} right · "
+                    f"{s['avg_edge']:+.1f}% avg edge"
                 )
 
     rows("By tier", summary["by_tier"])
+    lines.append("")
+    rows("By direction", summary["by_direction"])
     lines.append("")
     rows("By conviction score", summary["by_bucket"])
     return "\n".join(lines)

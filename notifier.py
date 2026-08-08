@@ -288,8 +288,19 @@ def _metrics(alert: Alert) -> list[tuple[str, str]]:
     m = alert.meta
     out = []
 
-    if m.get("dollar_total"):
-        out.append(("Disclosed size", _fmt_dollars(m["dollar_total"])))
+    # Congressional and insider dollars are different kinds of number — a
+    # disclosure-bracket midpoint versus an exact transaction value — so they are
+    # shown apart. The total is kept alongside, but only where both exist and it
+    # cannot be mistaken for congressional conviction on its own.
+    congress_dollars = m.get("congress_dollars", 0.0)
+    insider_dollars  = m.get("insider_dollars", 0.0)
+
+    if congress_dollars:
+        out.append(("Congress size", _fmt_dollars(congress_dollars)))
+    if insider_dollars:
+        out.append(("Insider size", _fmt_dollars(insider_dollars)))
+    if congress_dollars and insider_dollars:
+        out.append(("Combined", _fmt_dollars(congress_dollars + insider_dollars)))
 
     lag = m.get("median_lag_days")
     if lag is None:
@@ -300,10 +311,16 @@ def _metrics(alert: Alert) -> list[tuple[str, str]]:
 
     pct = m.get("pct_since_trade")
     if pct is not None:
-        spy = m.get("spy_since_trade")
+        spy   = m.get("spy_since_trade")
         since = f"{pct:+.1f}%"
         if spy is not None:
             since += f" (SPY {spy:+.1f}%)"
+        # Same number means opposite things by direction: a sell cluster followed
+        # by a rally is a signal that has been wrong so far, not a win.
+        excess = m.get("excess_since_trade")
+        if excess is not None:
+            right = excess > 0 if m.get("direction", "buy") == "buy" else excess < 0
+            since += " ✓" if right else " ✗"
         out.append(("Since trade date", since))
 
     if m.get("best_win_rate"):
@@ -394,7 +411,7 @@ def _alert_card(alert: Alert, rank: int, with_ai: bool) -> tuple[str, str]:
             for t in insider
         )
         insider_html = f"""
-      <p style="margin:14px 0 6px;font-size:12px;font-weight:600;color:#374151;">Insider (CEO/CFO) buys</p>
+      <p style="margin:14px 0 6px;font-size:12px;font-weight:600;color:#374151;">Insider buys</p>
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead>
           <tr style="background:#f3f4f6;text-align:left;">
@@ -751,7 +768,7 @@ def _sample_alerts() -> list[Alert]:
                 "ptr_link": "http://openinsider.com/screener?s=NVDA",
             },
         ],
-        message = "🔗 CROSS-SIGNAL: NVDA — 2 congressional buy(s) + 1 CEO/CFO buy(s), 4 days apart",
+        message = "🔗 CROSS-SIGNAL: NVDA — 2 congressional buy(s) + 1 insider buy(s), 4 days apart",
     )
 
     weak = Alert(

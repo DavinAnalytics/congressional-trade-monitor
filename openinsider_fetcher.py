@@ -163,7 +163,7 @@ def _get_screener_html() -> str:
 
 def fetch_all(days: int = config.FETCH_DAYS) -> list[dict]:
     """
-    Fetch CEO/CFO open-market buys from openinsider.com.
+    Fetch insider open-market buys from openinsider.com.
     Returns normalized insider trade dicts sorted by transaction_date desc.
 
     Raises InsiderFetchError if the feed is unreachable — callers must not treat

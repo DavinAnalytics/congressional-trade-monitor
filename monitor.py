@@ -73,7 +73,7 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     else:
         recent = all_trades
 
-    # Fetch insider (CEO/CFO) open-market buys for cross-cluster detection.
+    # Fetch insider open-market buys for cross-cluster detection.
     # A feed outage must not masquerade as "no insiders bought anything" — carry
     # on with the congressional alerts, but say plainly that cross-signals could
     # not run this cycle.
@@ -94,7 +94,7 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     print("\nAnalyzing...")
     alerts = analyze(recent)
 
-    # 🔗 Cross-cluster — tickers bought by both Congress and a CEO/CFO
+    # 🔗 Cross-cluster — tickers bought by both Congress and a company insider
     print("\nDetecting cross-cluster alerts...")
     cross_alerts = analyze_cross_cluster(recent, insider_trades)
 

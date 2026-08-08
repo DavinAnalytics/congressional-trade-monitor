@@ -403,7 +403,7 @@ def find_cross_signals(
 ) -> list[dict]:
     """
     Find tickers bought by BOTH a member of Congress and a company insider
-    (CEO/CFO) within `window_days` of each other.
+    (any Section 16 officer) within `window_days` of each other.
 
     Proximity is pairwise: a trade qualifies if it is within `window_days` of at
     least one trade on the *other* side. Measuring the span across every trade on
@@ -466,7 +466,7 @@ def detect_cross_cluster_alerts(
 ) -> list[Alert]:
     """
     🔗 Cross-Cluster Alert
-    Fire when 1+ congressional buy AND 1+ CEO/CFO open-market buy hit the same
+    Fire when 1+ congressional buy AND 1+ insider open-market buy hit the same
     ticker within the cluster window. Stronger conviction signal than either alone.
     """
     alerts = []
@@ -483,7 +483,7 @@ def detect_cross_cluster_alerts(
             trades  = tagged,
             message = (
                 f"🔗 CROSS-SIGNAL: {m['ticker']} — {len(m['congress'])} congressional "
-                f"buy(s) + {len(m['insider'])} CEO/CFO buy(s), {m['span_days']} days apart\n"
+                f"buy(s) + {len(m['insider'])} insider buy(s), {m['span_days']} days apart\n"
                 f"Congress: {', '.join(members)} | Insiders: {', '.join(insiders)}"
             ),
         ))
@@ -525,7 +525,19 @@ def enrich_and_score(alert: Alert, win_rates: dict[str, dict] | None = None) -> 
     congress = [t for t in alert.trades if t.get("source") != "insider"]
 
     members = sorted({t["representative"] for t in congress if t.get("representative")})
-    dollar_total = sum(parse_amount_value(t.get("amount", "")) for t in alert.trades)
+
+    # Congressional disclosures are brackets ("$1,001 - $15,000") reduced to a
+    # midpoint; insider values are exact transaction amounts. Summing the two into
+    # one figure lets a large insider buy masquerade as congressional conviction,
+    # so they are tracked apart and only totalled for display.
+    congress_dollars = sum(parse_amount_value(t.get("amount", "")) for t in congress)
+    insider_dollars  = sum(parse_amount_value(t.get("amount", "")) for t in insider)
+    dollar_total     = congress_dollars + insider_dollars
+
+    # Direction of the congressional side. A sell cluster predicts underperformance,
+    # so downstream performance scoring must not treat it like a buy. Cross-signals
+    # have no congressional side other than purchases, hence the "buy" default.
+    direction = "sell" if congress and congress[0]["type"] != "purchase" else "buy"
 
     # Congressional lags only — insiders file Form 4 within two business days,
     # so mixing the two would wash out the staleness signal.
@@ -557,6 +569,9 @@ def enrich_and_score(alert: Alert, win_rates: dict[str, dict] | None = None) -> 
         "n_members":          len(members),
         "n_insiders":         len(insider),
         "members":            members,
+        "direction":          direction,
+        "congress_dollars":   congress_dollars,
+        "insider_dollars":    insider_dollars,
         "dollar_total":       dollar_total,
         "median_lag_days":    median_lag,
         "first_date":         first_date,
@@ -569,10 +584,13 @@ def enrich_and_score(alert: Alert, win_rates: dict[str, dict] | None = None) -> 
     }
 
     # ── Components, each scaled to 0–1 then weighted ──
+    # Sized on the congressional leg alone: this component measures congressional
+    # conviction, and a large insider buy already earns credit through the
+    # participant and seniority components.
     floor = 3.0  # log10($1,000) — below this a trade is a rounding error
     cap   = math.log10(config.SCORE_DOLLAR_CAP)
-    if dollar_total > 0:
-        dollar_frac = (math.log10(max(dollar_total, 1)) - floor) / (cap - floor)
+    if congress_dollars > 0:
+        dollar_frac = (math.log10(max(congress_dollars, 1)) - floor) / (cap - floor)
     else:
         dollar_frac = 0.0
     dollar_frac = min(1.0, max(0.0, dollar_frac))

@@ -3,7 +3,7 @@
 **Status:** ✅ Complete - all modules built and tested  
 **Live dashboard:** https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
-**Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider (CEO/CFO) open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
+**Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
 
 ---
 
@@ -13,7 +13,7 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 
 **Core insight driving the design:** The top-performer leaderboard is non-sticky year to year; none of the top performers of 2024 showed up in top performers of 2025. Instead of chasing one politician (e.g. Pelosi), broad monitoring with cluster detection is the smarter decision.
 
-**Insider cross-referencing:** Beyond Congress, the monitor also scrapes open-market purchases by corporate CEOs and CFOs (via OpenInsider) and raises a **Cross-Signal** alert when the same ticker is being accumulated by both Congress and a company's own executives within the 45-day window — a stronger conviction signal than either source alone.
+**Insider cross-referencing:** Beyond Congress, the monitor also scrapes open-market purchases by corporate insiders (via OpenInsider — Section 16 officers, so CEOs and CFOs but also VPs and other officers) and raises a **Cross-Signal** alert when the same ticker is being accumulated by both Congress and a company's own executives within the 45-day window — a stronger conviction signal than either source alone.
 
 ---
 
@@ -24,7 +24,7 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 | ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal |
 | 🏆 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
 | 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
-| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal |
+| 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate insider within 45 days | Combined-conviction signal |
 
 All alerts from a run are sent as **one digest email**, ranked by a 0–100 conviction
 score so the strongest signal leads the subject line. The top-ranked alerts also carry
@@ -37,11 +37,11 @@ Each alert is scored from the evidence behind it, weights in `config.SCORE_WEIGH
 | Component | Why it matters |
 |-----------|----------------|
 | Tier base | Cross-signal > cluster > win-rate > watchlist |
-| Disclosed size | Log-scaled midpoint of the disclosure ranges — separates a $1K token buy from $500K |
+| Disclosed size | Log-scaled midpoint of the **congressional** disclosure ranges — separates a $1K token buy from $500K. Insider dollars are excluded so a whale insider buy cannot masquerade as congressional conviction; the insider leg earns credit via participants and seniority instead. |
 | Participants | Distinct members, plus insiders on cross-signals |
 | Freshness | Decays as disclosure lag approaches 45 days |
 | Track record | Best historical win rate among participating members |
-| Seniority | CEO/CFO outranks other officers on cross-signals |
+| Seniority | CEO/CFO outranks other officers (VPs, etc.) on cross-signals |
 
 **Disclosure lag** is surfaced on every alert. The STOCK Act allows up to 45 days
 between execution and disclosure, so a trade disclosed 4 days later and one disclosed
@@ -67,7 +67,7 @@ cp .env.example .env
 # Launch the visual dashboard (no credentials required)
 python -m streamlit run dashboard.py
 
-# Preview filtered OpenInsider CEO/CFO buys
+# Preview filtered OpenInsider insider buys
 python openinsider_fetcher.py
 
 # Test one full cycle (fetch → analyze → ranked digest email)
@@ -335,15 +335,21 @@ Alert performance vs SPY over 60 days
   38 recorded · 6 still maturing
 
   By tier
-    cross_cluster     9 scored · 67% beat SPY · +4.2% avg excess
-    cluster          14 scored · 50% beat SPY · +0.8% avg excess
-    watchlist         9 scored · 44% beat SPY · -1.1% avg excess
+    cross_cluster     9 scored · 67% right · +4.2% avg edge
+    cluster          14 scored · 50% right · +0.8% avg edge
+    watchlist         9 scored · 44% right · -1.1% avg edge
+
+  By direction
+    buy              21 scored · 57% right · +2.1% avg edge
+    sell             11 scored · 45% right · -0.6% avg edge
 
   By conviction score
-    0-40              7 scored · 43% beat SPY · -0.9% avg excess
-    40-70            16 scored · 50% beat SPY · +1.1% avg excess
-    70+               9 scored · 67% beat SPY · +4.4% avg excess
+    0-40              7 scored · 43% right · -0.9% avg edge
+    40-70            16 scored · 50% right · +1.1% avg edge
+    70+               9 scored · 67% right · +4.4% avg edge
 ```
+
+**Edge, not excess.** Raw excess return answers "did the stock beat SPY", which is only the right question for a buy signal. A sell cluster predicts *under*performance, so a stock that beats SPY means that signal was **wrong**. `edge_N` flips the sign for sells, so it reads uniformly as "how far the signal was right" and is safe to aggregate across directions. Alerts recorded before direction tracking existed cannot be scored either way and are excluded from aggregation rather than silently inverted.
 
 The tier breakdown says which signal types earn their place. The score breakdown is a check on the conviction weights themselves — if the 70+ bucket does not outperform the 0-40 bucket, the weights in `config.SCORE_WEIGHTS` are miscalibrated and should be changed. Nothing here is meaningful until roughly 30–60 days of alerts have matured.
 

@@ -381,7 +381,7 @@ def test_score_history_computes_excess_over_spy(stub_state, monkeypatch):
     stub_state[config.HISTORY_FILE] = [{
         "id": "cluster|NVDA|2026-01-01", "fired_date": "2026-01-01",
         "entry_date": "2026-01-01", "tier": "cluster", "ticker": "NVDA",
-        "score": 75.0, "entry_price": 100.0, "spy_entry": 400.0,
+        "score": 75.0, "direction": "buy", "entry_price": 100.0, "spy_entry": 400.0,
     }]
 
     # Ticker +20%, SPY +5% at every horizon → +15% excess.
@@ -396,6 +396,7 @@ def test_score_history_computes_excess_over_spy(stub_state, monkeypatch):
         assert record[f"ret_{window}"] == pytest.approx(20.0)
         assert record[f"spy_{window}"] == pytest.approx(5.0)
         assert record[f"excess_{window}"] == pytest.approx(15.0)
+        assert record[f"edge_{window}"] == pytest.approx(15.0)
 
 
 def test_score_history_skips_unmatured_windows(stub_state, monkeypatch):
@@ -403,24 +404,24 @@ def test_score_history_skips_unmatured_windows(stub_state, monkeypatch):
     stub_state[config.HISTORY_FILE] = [{
         "id": "cluster|NVDA|2026-01-01", "fired_date": "2026-01-01",
         "entry_date": "2026-01-01", "tier": "cluster", "ticker": "NVDA",
-        "score": 75.0, "entry_price": 100.0, "spy_entry": 400.0,
+        "score": 75.0, "direction": "buy", "entry_price": 100.0, "spy_entry": 400.0,
     }]
     monkeypatch.setattr(history, "_get_price", lambda t, d: 120.0 if t == "NVDA" else 420.0)
 
     # 45 days in: only the 30-day window has elapsed.
     history.score_history(today=entry + timedelta(days=45))
     (record,) = stub_state[config.HISTORY_FILE]
-    assert "excess_30" in record
-    assert "excess_60" not in record
-    assert "excess_90" not in record
+    assert "edge_30" in record
+    assert "edge_60" not in record
+    assert "edge_90" not in record
 
 
 def test_score_history_does_not_rescore(stub_state, monkeypatch):
     stub_state[config.HISTORY_FILE] = [{
         "id": "cluster|NVDA|2026-01-01", "entry_date": "2026-01-01",
         "tier": "cluster", "ticker": "NVDA", "score": 75.0,
-        "entry_price": 100.0, "spy_entry": 400.0,
-        **{f"excess_{w}": 1.0 for w in config.WIN_RATE_WINDOWS},
+        "entry_price": 100.0, "spy_entry": 400.0, "direction": "buy",
+        **{f"edge_{w}": 1.0 for w in config.WIN_RATE_WINDOWS},
     }]
     monkeypatch.setattr(history, "_get_price", lambda t, d: 999.0)
 
@@ -430,11 +431,11 @@ def test_score_history_does_not_rescore(stub_state, monkeypatch):
 def test_performance_summary_aggregates_by_tier_and_bucket(stub_state):
     w = config.WIN_RATE_PRIMARY
     stub_state[config.HISTORY_FILE] = [
-        {"id": "1", "tier": "cluster",       "ticker": "A", "score": 80.0, f"excess_{w}":  10.0},
-        {"id": "2", "tier": "cluster",       "ticker": "B", "score": 75.0, f"excess_{w}":  -2.0},
-        {"id": "3", "tier": "cross_cluster", "ticker": "C", "score": 90.0, f"excess_{w}":  20.0},
-        {"id": "4", "tier": "watchlist",     "ticker": "D", "score": 20.0, f"excess_{w}": -10.0},
-        {"id": "5", "tier": "watchlist",     "ticker": "E", "score": 25.0},  # unmatured
+        {"id": "1", "tier": "cluster",       "ticker": "A", "score": 80.0, "direction": "buy",  f"edge_{w}":  10.0},
+        {"id": "2", "tier": "cluster",       "ticker": "B", "score": 75.0, "direction": "sell", f"edge_{w}":  -2.0},
+        {"id": "3", "tier": "cross_cluster", "ticker": "C", "score": 90.0, "direction": "buy",  f"edge_{w}":  20.0},
+        {"id": "4", "tier": "watchlist",     "ticker": "D", "score": 20.0, "direction": "buy",  f"edge_{w}": -10.0},
+        {"id": "5", "tier": "watchlist",     "ticker": "E", "score": 25.0, "direction": "buy"},  # unmatured
     ]
 
     summary = history.performance_summary()
@@ -442,9 +443,9 @@ def test_performance_summary_aggregates_by_tier_and_bucket(stub_state):
     assert summary["total"] == 5
     assert summary["unmatured"] == 1
     assert summary["by_tier"]["cluster"] == {
-        "n": 2, "beat_spy": 0.5, "avg_excess": 4.0,
+        "n": 2, "hit_rate": 0.5, "avg_edge": 4.0,
     }
-    assert summary["by_tier"]["cross_cluster"]["beat_spy"] == 1.0
+    assert summary["by_tier"]["cross_cluster"]["hit_rate"] == 1.0
     assert summary["by_bucket"]["70+"]["n"] == 3
     assert summary["by_bucket"]["0-40"]["n"] == 1
     assert summary["by_bucket"]["40-70"]["n"] == 0
@@ -533,6 +534,113 @@ def test_price_cache_evicts_when_full(monkeypatch):
     assert len(analyzer._PRICE_CACHE) <= 100
     # The most recent write always survives eviction.
     assert analyzer._PRICE_CACHE[("T", "2026-01-149", "first")] == 149.0
+
+
+# ── Direction awareness ───────────────────────────────────────────────────────
+
+def test_direction_tracks_the_congressional_leg():
+    buy  = _alert("cluster", [trade(representative="A", type="purchase")])
+    sell = _alert("cluster", [trade(representative="A", type="sale")])
+    part = _alert("cluster", [trade(representative="A", type="sale_partial")])
+
+    for a in (buy, sell, part):
+        analyzer.enrich_and_score(a, win_rates={})
+
+    assert buy.meta["direction"] == "buy"
+    assert sell.meta["direction"] == "sell"
+    assert part.meta["direction"] == "sell"
+
+
+def test_cross_signals_are_always_buys():
+    alert = _alert("cross_cluster", [
+        trade(representative="A", source="congress"), insider_trade(),
+    ])
+    analyzer.enrich_and_score(alert, win_rates={})
+    assert alert.meta["direction"] == "buy"
+
+
+def test_congress_and_insider_dollars_are_tracked_apart():
+    """A large insider buy must not inflate apparent congressional conviction."""
+    alert = _alert("cross_cluster", [
+        trade(representative="A", amount="$1,001 - $15,000", source="congress"),
+        insider_trade(amount="$2,400,000"),
+    ])
+    analyzer.enrich_and_score(alert, win_rates={})
+
+    assert alert.meta["congress_dollars"] == pytest.approx(8_000.5)
+    assert alert.meta["insider_dollars"] == pytest.approx(2_400_000.0)
+    assert alert.meta["dollar_total"] == pytest.approx(2_408_000.5)
+
+
+def test_score_sizes_on_congressional_dollars_only():
+    """Otherwise a whale insider buy would outrank real congressional conviction."""
+    small_congress = _alert("cross_cluster", [
+        trade(representative="A", amount="$1,001 - $15,000", source="congress"),
+        insider_trade(amount="$50,000,000"),
+    ])
+    big_congress = _alert("cross_cluster", [
+        trade(representative="A", amount="$500,001 - $1,000,000", source="congress"),
+        insider_trade(amount="$60,000"),
+    ])
+    for a in (small_congress, big_congress):
+        analyzer.enrich_and_score(a, win_rates={})
+
+    assert big_congress.score > small_congress.score
+
+
+def test_sell_alert_edge_is_inverted(stub_state, monkeypatch):
+    """
+    The bug this guards: a sell cluster followed by a rally used to be recorded
+    as a win, because excess return was aggregated without regard to direction.
+    """
+    entry = datetime(2026, 1, 1)
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "buy", "entry_date": "2026-01-01", "tier": "cluster", "ticker": "NVDA",
+         "score": 60.0, "direction": "buy", "entry_price": 100.0, "spy_entry": 400.0},
+        {"id": "sell", "entry_date": "2026-01-01", "tier": "cluster", "ticker": "NVDA",
+         "score": 60.0, "direction": "sell", "entry_price": 100.0, "spy_entry": 400.0},
+    ]
+    # NVDA +20%, SPY +5% → +15% excess for both records.
+    monkeypatch.setattr(history, "_get_price", lambda t, d: 120.0 if t == "NVDA" else 420.0)
+
+    history.score_history(today=entry + timedelta(days=200))
+    buy_rec, sell_rec = stub_state[config.HISTORY_FILE]
+
+    w = config.WIN_RATE_PRIMARY
+    assert buy_rec[f"excess_{w}"] == pytest.approx(15.0)
+    assert sell_rec[f"excess_{w}"] == pytest.approx(15.0)   # same raw excess
+    assert buy_rec[f"edge_{w}"] == pytest.approx(15.0)      # buy was right
+    assert sell_rec[f"edge_{w}"] == pytest.approx(-15.0)    # sell was wrong
+
+
+def test_legacy_records_without_direction_are_excluded(stub_state):
+    """Pre-direction records are unscoreable — counting them would invert sells."""
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "1", "tier": "cluster", "ticker": "A", "score": 80.0, f"edge_{w}": 10.0},
+        {"id": "2", "tier": "cluster", "ticker": "B", "score": 80.0,
+         "direction": "buy", f"edge_{w}": 4.0},
+    ]
+    summary = history.performance_summary()
+
+    assert summary["legacy"] == 1
+    assert summary["total"] == 1
+    assert summary["by_tier"]["cluster"]["n"] == 1
+    assert summary["by_tier"]["cluster"]["avg_edge"] == pytest.approx(4.0)
+
+
+def test_summary_breaks_out_by_direction(stub_state):
+    w = config.WIN_RATE_PRIMARY
+    stub_state[config.HISTORY_FILE] = [
+        {"id": "1", "tier": "cluster", "ticker": "A", "score": 80.0,
+         "direction": "buy",  f"edge_{w}": 10.0},
+        {"id": "2", "tier": "cluster", "ticker": "B", "score": 80.0,
+         "direction": "sell", f"edge_{w}": -6.0},
+    ]
+    summary = history.performance_summary()
+
+    assert summary["by_direction"]["buy"]["hit_rate"] == 1.0
+    assert summary["by_direction"]["sell"]["hit_rate"] == 0.0
 
 
 # ── Insider feed resilience ───────────────────────────────────────────────────
