@@ -26,9 +26,32 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 | 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
 | 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate CEO/CFO within 45 days | Combined-conviction signal |
 
-Every alert email includes a Gemini AI context block explaining why the signal may be forming right now (see [AI-Powered Features](#ai-powered-features-gemini-25-flash)).
+All alerts from a run are sent as **one digest email**, ranked by a 0–100 conviction
+score so the strongest signal leads the subject line. The top-ranked alerts also carry
+a Gemini AI context block (see [AI-Powered Features](#ai-powered-features-gemini-25-flash)).
 
-Alert header color in the dashboard and email reflects trade direction: **green** for net buy activity, **red** for net sell activity — independent of tier.
+### Conviction score
+
+Each alert is scored from the evidence behind it, weights in `config.SCORE_WEIGHTS`:
+
+| Component | Why it matters |
+|-----------|----------------|
+| Tier base | Cross-signal > cluster > win-rate > watchlist |
+| Disclosed size | Log-scaled midpoint of the disclosure ranges — separates a $1K token buy from $500K |
+| Participants | Distinct members, plus insiders on cross-signals |
+| Freshness | Decays as disclosure lag approaches 45 days |
+| Track record | Best historical win rate among participating members |
+| Seniority | CEO/CFO outranks other officers on cross-signals |
+
+**Disclosure lag** is surfaced on every alert. The STOCK Act allows up to 45 days
+between execution and disclosure, so a trade disclosed 4 days later and one disclosed
+44 days later are very different signals — the second is often already priced in. Each
+alert also shows the ticker's move since the trade date against SPY, so you can see
+immediately whether the move already happened. Stale alerts are downranked and
+labeled, never hidden.
+
+Alert header color in the dashboard reflects trade direction: **green** for net buy
+activity, **red** for net sell activity — independent of tier.
 
 ---
 
@@ -47,14 +70,23 @@ python -m streamlit run dashboard.py
 # Preview filtered OpenInsider CEO/CFO buys
 python openinsider_fetcher.py
 
-# Test one full cycle (fetch → analyze → alerts)
+# Test one full cycle (fetch → analyze → ranked digest email)
 python monitor.py --once
 
-# Send a daily digest email
+# Send the weekly digest email
 python monitor.py --summary
+
+# Score past alerts against SPY and print the performance summary
+python monitor.py --performance
 
 # Run forever (polls every 4 hours)
 python monitor.py
+
+# Preview the digest layout as HTML without sending or calling Gemini
+python notifier.py
+
+# Run the test suite
+./.venv/bin/pytest tests/
 ```
 
 ---
@@ -111,9 +143,10 @@ congressional-trade-monitor/
 ├── config.py            # Watchlist, alert thresholds, email settings (safe to commit)
 ├── fetcher.py           # House + Senate data fetchers
 ├── openinsider_fetcher.py # OpenInsider CEO/CFO open-market buy scraper (value + market-cap filtered)
-├── analyzer.py          # Cluster + cross-signal detection, win-rate leaderboard
+├── analyzer.py          # Cluster + cross-signal detection, conviction scoring, win-rate leaderboard
+├── history.py           # Fired-alert log + forward performance vs SPY
 ├── committees.py        # Committee assignments + conflict detection (official gov sources)
-├── notifier.py          # Email alert formatting and sending
+├── notifier.py          # Ranked digest formatting and sending
 ├── monitor.py           # Main polling loop
 ├── dashboard.py         # Streamlit visual dashboard (read-only, no side effects)
 ├── .env                 # Your credentials — gitignored, never committed
@@ -135,12 +168,19 @@ The monitor runs automatically on GitHub's servers, allowing it to run without t
 
 | Day | Schedule | What it does |
 |-----|----------|--------------|
-| Monday – Saturday | 6:00 AM PST | Fetches both chambers, detects signals, emails alerts for new trades |
-| Sunday | 6:00 AM PST | Sends a weekly digest: sector accumulation vs distribution table, top signals of the week, and Gemini-grounded legislative intelligence |
+| Monday – Saturday | 6:00 AM PST | Fetches both chambers, detects signals, sends one ranked digest of new alerts |
+| Sunday | 6:00 AM PST | Sends a weekly digest: sector accumulation vs distribution table, top signals of the week, alert performance vs SPY, and Gemini-grounded legislative intelligence |
 
 Both are handled by a single `monitor.yml` workflow. The script checks the day of week and runs `--once` or `--summary` accordingly.
 
-**State persistence:** `seen_trades.json` is stored in a private GitHub Gist between runs so duplicate alerts are never sent. Each run loads the Gist at start and saves back on completion.
+**State persistence:** `seen_trades.json` (dedup keys) and `alert_history.json` (fired-alert log) are stored in the same private GitHub Gist between runs. Each run loads the Gist at start and saves back on completion — no extra credentials are needed for the history file.
+
+**State retention:** the Gist API silently truncates file contents past ~1MB, which would corrupt state rather than fail loudly, so both files are bounded:
+
+| File | Bound | Rationale |
+|------|-------|-----------|
+| `seen_trades.json` | Keys whose newest trade date is older than `SEEN_RETENTION_DAYS` (120) are pruned on every save | Alerts only fire on trades inside `FETCH_DAYS` (45), so older keys can never re-match. The margin absorbs late and amended filings. Keys with no parseable date are always kept — dropping a live key would re-alert it. |
+| `alert_history.json` | Newest `HISTORY_MAX_RECORDS` (3000) retained | Roughly a year of alerts, far more than the 30–90 days needed to calibrate `SCORE_WEIGHTS`. |
 
 **Manual trigger:** The workflow has a `workflow_dispatch` trigger. You can run it on demand from the GitHub Actions tab at any time.
 
@@ -154,13 +194,15 @@ The model is overridable with the optional `GEMINI_MODEL` env var (default `gemi
 
 All AI-generated text is passed through `html.escape()` before being inserted into HTML email bodies, so any HTML characters in Gemini's response are rendered as literal text rather than markup.
 
-### Alert Context (all alert emails)
+### Alert Context (top-ranked alerts in each digest)
 
-When any alert fires — cluster, cross-signal, win-rate, or watchlist — `generate_alert_context()` in `notifier.py` makes one grounded Gemini call asking why the signal might be forming right now. The response (2–3 sentences) appears in the email as a blue **"AI Context · Gemini + Google Search"** block, placed below the trades table:
+`generate_alert_context()` in `notifier.py` makes one grounded Gemini call asking why a signal might be forming right now. The response (2–3 sentences) appears in the digest as a blue **"AI Context · Gemini + Google Search"** block below the trades table:
 
 > *"Jensen Huang testified before the Senate Commerce Committee on AI export controls on June 17. The Semiconductor Export Reform Act cleared committee markup June 18. Two of the three congressional buyers sit on Science & Technology subcommittees with direct chip-policy authority."*
 
-**Cost:** ~$0.035 per alert (Google Search grounding). Free tier covers 1,500 grounded calls/day — well within limits for personal use.
+Only the top `config.DIGEST_AI_TOP_N` (default 3) alerts by conviction score get a call, so a noisy day cannot burn the grounding quota on low-conviction signals. The prompt is given the full enriched picture — disclosed size, trade dates, disclosure lag, insider names and titles, and committee conflicts — rather than just a ticker and member names, which is what keeps the output specific.
+
+**Cost:** ~$0.035 per call (Google Search grounding). Free tier covers 1,500 grounded calls/day — well within limits for personal use.
 
 ### Weekly Digest (Sunday email)
 
@@ -218,7 +260,7 @@ The Senate eFD viewer pages render transaction data as a clean HTML table. No PD
 House PTR filings are only available as PDFs. The Clerk search endpoint returns server-rendered HTML (confirmed — not a React SPA), so a plain POST gives us the full filing index. Each PDF is parsed with pdfplumber using regex to extract ticker, type, date, and amount.
 
 ### Committee conflict detection
-`committees.py` fetches committee assignments for all 535 members from official government XML and HTML sources. On every watchlist alert, the member's committees and subcommittees are cross-referenced against sector-to-committee mappings in `config.py`. If a member sits on a committee with oversight authority over the traded ticker's sector, the conflict is flagged in the email.
+`committees.py` fetches committee assignments for all 535 members from official government XML and HTML sources. On **every** alert tier — cluster, cross-signal, win-rate, and watchlist — each participating member's committees and subcommittees are cross-referenced against sector-to-committee mappings in `config.py`. If a member sits on a committee with oversight authority over the traded ticker's sector, the conflict is flagged on that alert's card in the digest.
 
 **Name format fix:** Trade disclosures return names as `"Last, First Middle"` (e.g. `"Taylor, David J."`) while the committee cache keys names as `"First Last"`. `get_member_committees()` detects the comma-separated format and retries with both `"First Middle Last"` and `"First Last"` (dropping the middle initial), dramatically improving committee coverage.
 
@@ -235,7 +277,7 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
     "asset_description": "NVIDIA Corporation - Common Stock",
     "type":              "purchase" | "sale" | "sale_partial",
     "transaction_date":  "2026-05-08",
-    "disclosure_date":   "06/02/2026",
+    "disclosure_date":   "2026-06-02",
     "amount":            "$100,001 - $250,000",
     "ptr_link":          "https://...",
     "owner":             "Self" | "Spouse" | "Dependent Child" | "",
@@ -267,10 +309,41 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
 - **Minimum trade value** — drops buys under `MIN_TRADE_VALUE` ($50k), removing micro-cap penny-stock noise.
 - **Minimum market cap** — the OpenInsider screener exposes no market-cap parameter, so market cap is looked up per unique ticker via yfinance and buys under `MIN_MARKET_CAP_M` ($300M, overridable via the `MIN_MARKET_CAP_M` env var) are dropped. Tickers with no market-cap data are kept, so a transient yfinance miss never silently discards a legitimate large-cap.
 
-**Cross-signal detection** (`find_cross_signals` / `detect_cross_cluster_alerts` in `analyzer.py`) groups congressional purchases and insider buys by ticker and fires a 🔗 alert when both appear on the same ticker within `CLUSTER_DAYS` (45). The alert email lists the congressional buys and the insider buys in separate tables and reports the days between the first and last signal. Existing congressional detectors and email templates are untouched — the cross-signal path is purely additive and runs alongside them in `monitor.poll()`.
+**Cross-signal detection** (`find_cross_signals` / `detect_cross_cluster_alerts` in `analyzer.py`) groups congressional purchases and insider buys by ticker and fires a 🔗 alert when both appear on the same ticker within `CLUSTER_DAYS` (45).
+
+Proximity is **pairwise**: a trade joins the signal if it falls within the window of at least one trade on the *other* side. Measuring one span across every trade on the ticker — the original implementation — let a single unrelated older congressional buy push a genuinely tight Congress/insider pairing outside the window and discard the entire signal. The match carries only the trades in the overlap, so the "N days apart" figure describes the alert's actual contents.
+
+The alert card lists congressional buys and insider buys in separate tables. Existing congressional detectors are untouched — the cross-signal path is purely additive and runs alongside them in `monitor.poll()`.
 
 ### Win-Rate Calculation
 Uses yfinance to pull stock price on `transaction_date`, compares 30/60/90-day forward returns vs. SPY benchmark. A trade is a win if the member outperformed SPY. Minimum 10 scored trades required before a member qualifies for win-rate alerts.
+
+All price lookups are memoized per process (`analyzer._PRICE_CACHE`), so SPY is downloaded once per date rather than once per scored trade.
+
+### Alert performance tracking
+
+Win rates measure *members*. `history.py` measures the *monitor itself*: every fired alert is appended to `alert_history.json` with its conviction score, tier, and entry price at fire time. Once a forward window elapses, `score_history()` fills in the return, SPY's return, and the excess over the same span.
+
+```
+$ python monitor.py --performance
+
+Alert performance vs SPY over 60 days
+  38 recorded · 6 still maturing
+
+  By tier
+    cross_cluster     9 scored · 67% beat SPY · +4.2% avg excess
+    cluster          14 scored · 50% beat SPY · +0.8% avg excess
+    watchlist         9 scored · 44% beat SPY · -1.1% avg excess
+
+  By conviction score
+    0-40              7 scored · 43% beat SPY · -0.9% avg excess
+    40-70            16 scored · 50% beat SPY · +1.1% avg excess
+    70+               9 scored · 67% beat SPY · +4.4% avg excess
+```
+
+The tier breakdown says which signal types earn their place. The score breakdown is a check on the conviction weights themselves — if the 70+ bucket does not outperform the 0-40 bucket, the weights in `config.SCORE_WEIGHTS` are miscalibrated and should be changed. Nothing here is meaningful until roughly 30–60 days of alerts have matured.
+
+*(Numbers above are illustrative of the output format, not measured results.)*
 
 ### State management
 `seen_trades.json` tracks every trade that has already triggered an alert using a `representative|ticker|date|type` key. On each poll, only truly new trades fire alerts without duplicate emails. Cross-signal alerts dedupe against the same file using a `crosscluster|ticker|<participants>` key, so an overlap re-fires only when a new buyer joins it.

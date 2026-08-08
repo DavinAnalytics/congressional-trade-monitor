@@ -52,9 +52,56 @@ WATCHLIST = [
 POLL_INTERVAL_SECONDS = 14_400   # 4 hours
 FETCH_DAYS            = 45       # alert window
 
-# ── State File ────────────────────────────────────────────────────────────────
+# ── State Files ───────────────────────────────────────────────────────────────
 
 SEEN_TRADES_FILE = "seen_trades.json"
+
+# Fired-alert log, used to measure whether alerts actually beat SPY.
+# Lives alongside SEEN_TRADES_FILE in the same Gist (a Gist holds many files).
+HISTORY_FILE = "alert_history.json"
+
+# ── State Retention ───────────────────────────────────────────────────────────
+# Both state files live in a Gist, and the Gist API silently truncates file
+# contents past ~1MB — which would corrupt state rather than fail loudly. Both
+# are therefore capped.
+
+# Drop seen-keys whose newest trade date is older than this. Alerts only ever
+# fire on trades inside FETCH_DAYS, so anything older can never re-match; the
+# margin over FETCH_DAYS absorbs late filings and amended disclosures.
+SEEN_RETENTION_DAYS = 120
+
+# Keep at most this many fired-alert records, newest first. ~8 alerts/day means
+# this is roughly a year of history — far more than the 30–90 days needed to
+# calibrate SCORE_WEIGHTS.
+HISTORY_MAX_RECORDS = 3000
+
+# ── Conviction Scoring ────────────────────────────────────────────────────────
+
+# Max points each component contributes to an alert's 0–100 conviction score.
+# Tier base is the floor for the alert type; the rest scale with the evidence.
+SCORE_WEIGHTS = {
+    "tier_base": {
+        "cross_cluster": 30,   # Congress + insider agreement — strongest setup
+        "cluster":       22,
+        "winrate":       14,
+        "watchlist":     10,
+    },
+    "dollars":      22,   # log-scaled: separates a $1K token buy from $500K
+    "participants": 18,   # distinct members, plus insiders on cross-signals
+    "freshness":    16,   # decays as disclosure lag approaches CLUSTER_DAYS
+    "track_record": 10,   # best historical win rate among participants
+    "seniority":     4,   # CEO/CFO outranks other officers (cross-signals only)
+}
+
+# Dollar totals at or above this earn full "dollars" points (log-scaled below it).
+SCORE_DOLLAR_CAP = 1_000_000
+
+# Participant count at or above this earns full "participants" points.
+SCORE_PARTICIPANT_CAP = 5
+
+# How many top-ranked alerts in a digest get an AI context blurb.
+# Gemini's free tier is limited, so spend it on the highest-conviction signals.
+DIGEST_AI_TOP_N = 3
 
 # ── Data Fetch Limits ─────────────────────────────────────────────────────────
 

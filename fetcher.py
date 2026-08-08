@@ -124,10 +124,15 @@ def _parse_senate_viewer(
     session: requests.Session,
     view_url: str,
     senator_name: str,
+    filing_date: str = "",
 ) -> list[dict]:
     """
     GET a Senate PTR viewer page and parse the transaction HTML table.
     Returns normalized trade dicts. No PDF download needed.
+
+    filing_date is the date the PTR was filed, taken from the search index —
+    the viewer table has no per-row notification date, so the filing date is
+    the disclosure date for every transaction in the report.
     """
     try:
         resp = session.get(
@@ -156,6 +161,9 @@ def _parse_senate_viewer(
     # Map header names to column indices
     headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
     col = {h: i for i, h in enumerate(headers)}
+
+    filed = _parse_date(filing_date)
+    disclosure_date = filed.strftime("%Y-%m-%d") if filed else ""
 
     trades = []
     for row in table.find_all("tr")[1:]:  # skip header row
@@ -189,7 +197,7 @@ def _parse_senate_viewer(
             "asset_description": asset_name,
             "type":              _normalize_type(tx_type),
             "transaction_date":  tx_date.strftime("%Y-%m-%d"),
-            "disclosure_date":   "",
+            "disclosure_date":   disclosure_date,
             "amount":            amount,
             "ptr_link":          view_url,
             "owner":             owner,
@@ -216,7 +224,7 @@ def fetch_senate(days: int = RECENT_DAYS) -> list[dict]:
     trades = []
     for i, filing in enumerate(to_parse):
         name = _clean_name(filing["name"])
-        filing_trades = _parse_senate_viewer(session, filing["view_url"], name)
+        filing_trades = _parse_senate_viewer(session, filing["view_url"], name, filing["date"])
         for t in filing_trades:
             tx_date = _parse_date(t["transaction_date"])
             if tx_date and tx_date >= cutoff:
@@ -333,6 +341,7 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
         tx_date = _parse_date(meta.group(3))
         if tx_date is None:
             continue
+        notified = _parse_date(meta.group(4))
 
         key = (meta_line.strip(), line.strip())
         if key in seen:
@@ -359,7 +368,7 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
             "asset_description": " ".join(block.split())[:100],
             "type":              _normalize_type(tx_type),
             "transaction_date":  tx_date.strftime("%Y-%m-%d"),
-            "disclosure_date":   meta.group(4),
+            "disclosure_date":   notified.strftime("%Y-%m-%d") if notified else "",
             "amount":            amount,
             "ptr_link":          pdf_url,
             "owner":             "",

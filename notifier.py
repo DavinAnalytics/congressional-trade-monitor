@@ -2,18 +2,18 @@
 notifier.py — Congressional Trade Monitor
 Formats Alert objects into emails and sends them via Gmail SMTP.
 
-Each alert tier gets its own email template:
-  🔴 Cluster  — urgent, detailed member list + trade table
-  🟡 Win-Rate — highlights member's track record
-  🟢 Watchlist — clean single-trade summary
+Every alert from a run goes into one digest, ranked by conviction score, so a
+busy day produces a single triageable email rather than a dozen ignored ones.
+Each alert renders as a card carrying the numbers that decide whether it is
+actionable: disclosed size, disclosure lag, price move since the trade date,
+committee conflicts, and — for the top few — AI context from Gemini.
 
 Public interface:
-  send_alerts(alerts) -> None
-  send_summary(alerts, trades) -> None  (daily digest, optional)
+  send_digest(alerts) -> None
+  send_summary(alerts, trades, performance) -> None  (weekly digest)
 """
 
 import os
-import re
 import smtplib
 import time
 from html import escape
@@ -23,7 +23,7 @@ from email.mime.text import MIMEText
 from datetime import datetime
 
 import config
-from analyzer import Alert
+from analyzer import Alert, parse_amount_value
 
 
 # ── Email transport ───────────────────────────────────────────────────────────
@@ -65,10 +65,14 @@ def _fmt_amount(s: str) -> str:
     """Convert a disclosure range string to a midpoint estimate, e.g. '~$8K'."""
     if not s or s.lower().startswith("none"):
         return "—"
-    nums = [float(n.replace(",", "")) for n in re.findall(r"[\d,]+", s)]
-    v = (nums[0] + nums[1]) / 2 if len(nums) >= 2 else (nums[0] if nums else 0)
+    v = parse_amount_value(s)
     if v <= 0:
         return s
+    return _fmt_dollars(v)
+
+
+def _fmt_dollars(v: float) -> str:
+    """Format a dollar figure compactly, e.g. '~$8K', '~$1.2M'."""
     if v >= 1_000_000:
         return f"~${v / 1_000_000:.1f}M"
     if v >= 1_000:
@@ -210,498 +214,304 @@ def _gemini_generate(prompt: str, max_tokens: int, use_search: bool = True) -> s
     return None
 
 
-def generate_alert_context(ticker: str, members: list[str], direction: str) -> str | None:
-    """Explain why a cluster formed, grounded in real-time Google Search."""
-    names = ", ".join(members[:3]) + ("..." if len(members) > 3 else "")
+def generate_alert_context(alert: Alert, conflicts: list[str] | None = None) -> str | None:
+    """
+    Explain why a signal formed, grounded in real-time Google Search.
+    Fed the full enriched picture — size, timing, disclosure lag, insiders and
+    committee conflicts — because a prompt carrying only a ticker and three
+    names can only produce generic commentary.
+    """
+    m = alert.meta
+    members   = m.get("members", [])
+    direction = "buying" if alert.trades[0]["type"] == "purchase" else "selling"
+
+    facts = [f"{len(members)} member(s) of Congress are {direction} {alert.ticker}"]
+    if members:
+        facts.append("Members: " + ", ".join(members[:5]) + ("..." if len(members) > 5 else ""))
+    if m.get("dollar_total"):
+        facts.append(f"Combined disclosed size: {_fmt_dollars(m['dollar_total'])}")
+    if m.get("first_date"):
+        facts.append(f"Trade dates: {m['first_date']} to {m.get('last_date', m['first_date'])}")
+    if m.get("median_lag_days") is not None:
+        facts.append(f"Disclosed {m['median_lag_days']} days after execution")
+    if m.get("n_insiders"):
+        titles = sorted({t.get("title", "") for t in alert.trades if t.get("source") == "insider"})
+        facts.append(f"Also bought by {m['n_insiders']} company insider(s): {', '.join(filter(None, titles))}")
+    if conflicts:
+        facts.append("Relevant committee assignments: " + "; ".join(conflicts))
+
     prompt = (
-        f"In 2–3 sentences, explain what is happening right now with {ticker} stock "
-        f"that might explain why {len(members)} members of Congress ({names}) are "
-        f"{direction} it. Focus on recent news, earnings, legislation, or regulatory "
-        f"developments. Be specific and factual."
+        f"Today is {datetime.now().strftime('%B %d, %Y')}.\n"
+        f"Congressional trading signal:\n- " + "\n- ".join(facts) + "\n\n"
+        f"In 2–3 sentences, explain what is happening with {alert.ticker} right now "
+        f"that could explain this activity. Focus on recent news, earnings, legislation, "
+        f"or regulatory developments. If the committee assignments above are relevant to "
+        f"the company, say how. Be specific and factual; do not restate the numbers above."
     )
     return _gemini_generate(prompt, max_tokens=220)
 
 
-# ── Alert formatters ──────────────────────────────────────────────────────────
+# ── Alert cards ───────────────────────────────────────────────────────────────
 
-def _format_cluster(alert: Alert) -> tuple[str, str, str]:
-    """Format a 🔴 Cluster Alert."""
-    members  = sorted({t["representative"] for t in alert.trades})
-    n        = len(members)
-    direction = "buying" if alert.trades[0]["type"] == "purchase" else "selling"
-    dates    = sorted(t["transaction_date"] for t in alert.trades)
+TIER_LABELS = {
+    "cross_cluster": "CROSS-SIGNAL",
+    "cluster":       "CLUSTER",
+    "winrate":       "WIN-RATE",
+    "watchlist":     "WATCHLIST",
+}
 
-    context = generate_alert_context(alert.ticker, members, direction)
-
-    subject = f"⚡ CLUSTER ALERT — {n} members {direction} {alert.ticker}"
-
-    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
-    text = (
-        f"CLUSTER ALERT\n"
-        f"{'='*50}\n"
-        f"Ticker:    {alert.ticker}\n"
-        f"Signal:    {n} members {direction} within {config.CLUSTER_DAYS} days\n"
-        f"Window:    {dates[0]} → {dates[-1]}\n"
-        f"Members:   {', '.join(members)}\n\n"
-        f"Trades:\n{_trade_rows_text(alert.trades)}\n\n"
-        f"This is a Tier 1 signal — strongest alert in the system."
-        f"{context_text}"
-    )
-
-    context_html = ""
-    if context:
-        context_html = f"""
-      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
-                  border-left:4px solid #3b82f6;">
-        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
-                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
-      </div>"""
-
-    table_rows = _trade_rows_html(alert.trades)
-    body = f"""
-      <p style="font-size:15px;color:#111;margin:0 0 16px;">
-        <strong>{n} members of Congress</strong> are {direction}
-        <strong>{alert.ticker}</strong> within a {config.CLUSTER_DAYS}-day window.
-        This is the strongest signal in the monitor.
-      </p>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead>
-          <tr style="background:#f3f4f6;text-align:left;">
-            <th style="padding:8px 12px;">Member</th>
-            <th style="padding:8px 12px;">Ticker</th>
-            <th style="padding:8px 12px;">Type</th>
-            <th style="padding:8px 12px;">Date</th>
-            <th style="padding:8px 12px;">Amount</th>
-            <th style="padding:8px 12px;">Filing</th>
-          </tr>
-        </thead>
-        <tbody>{table_rows}</tbody>
-      </table>
-      <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">
-        Cluster window: {config.CLUSTER_DAYS} days · Minimum members: {config.CLUSTER_MIN_MEMBERS}
-      </p>{context_html}"""
-
-    html = _base_html(
-        title  = f"⚡ Cluster — {alert.ticker}",
-        accent = "#1e3a5f",
-        body   = body,
-    )
-    return subject, text, html
+# (foreground, background) per tier — shared by the digest cards and the summary.
+TIER_COLORS = {
+    "cross_cluster": ("#7c3aed", "#ede9fe"),
+    "cluster":       ("#dc2626", "#fee2e2"),
+    "winrate":       ("#d97706", "#fef3c7"),
+    "watchlist":     ("#16a34a", "#dcfce7"),
+}
 
 
-def _format_winrate(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
-    """Format a 🟡 Win-Rate Alert with committee conflict context."""
-    from committees import flag_conflicts, get_member_committees
+def _alert_conflicts(alert: Alert) -> list[str]:
+    """
+    Committee conflicts for every member in an alert, as "Member: Committee"
+    lines. Applies to all tiers — a cluster forming among members who oversee
+    the sector is a materially different signal from one that isn't.
+    """
+    from committees import flag_conflicts
 
-    trade   = alert.trades[0]
-    member  = trade["representative"]
-    ticker  = trade["ticker"]
-    stats   = win_rates.get(member, {})
-    wr      = stats.get("win_rate", 0)
-    wins    = stats.get("wins", 0)
-    total   = stats.get("total", 0)
-    tx_type = trade["type"].replace("_", " ").title()
+    lines = []
+    for member in alert.meta.get("members", []):
+        lines += [f"{member}: {c}" for c in flag_conflicts(member, alert.ticker)]
+    return lines
 
-    members   = sorted({t["representative"] for t in alert.trades})
-    direction = "buying" if trade["type"] == "purchase" else "selling"
-    context   = generate_alert_context(ticker, members, direction)
 
-    # Committee conflict context
-    conflicts   = flag_conflicts(member, ticker)
-    member_data = get_member_committees(member)
+def _metrics(alert: Alert) -> list[tuple[str, str]]:
+    """The at-a-glance numbers for a card, as (label, value) pairs."""
+    m = alert.meta
+    out = []
 
-    # Plain text conflict lines
-    if conflicts:
-        conflict_text = "\nCommittee Conflicts:\n" + "\n".join(f"  ⚠ {c}" for c in conflicts)
-    elif member_data:
-        conflict_text = f"\nCommittee Conflicts: None flagged for {ticker}"
+    if m.get("dollar_total"):
+        out.append(("Disclosed size", _fmt_dollars(m["dollar_total"])))
+
+    lag = m.get("median_lag_days")
+    if lag is None:
+        out.append(("Disclosure lag", "unknown"))
     else:
-        conflict_text = "\nCommittee Conflicts: No committee data available"
+        freshness = "fresh" if lag <= 14 else ("aging" if lag <= 30 else "stale")
+        out.append(("Disclosure lag", f"{lag}d ({freshness})"))
 
-    subject = (
-        f"🏆 HIGH WIN-RATE — {member} · "
-        f"{ticker} {tx_type.upper()}"
-    )
+    pct = m.get("pct_since_trade")
+    if pct is not None:
+        spy = m.get("spy_since_trade")
+        since = f"{pct:+.1f}%"
+        if spy is not None:
+            since += f" (SPY {spy:+.1f}%)"
+        out.append(("Since trade date", since))
 
-    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
-    text = (
-        f"WIN-RATE ALERT\n"
-        f"{'='*50}\n"
-        f"Member:    {member}\n"
-        f"Win Rate:  {wr:.0%} ({wins}/{total} trades beat SPY "
-        f"over {config.WIN_RATE_PRIMARY} days)\n\n"
-        f"New Trade:\n{_trade_rows_text([trade])}"
-        f"{conflict_text}\n\n"
-        f"Filing: {trade['ptr_link']}"
-        f"{context_text}"
-    )
+    if m.get("best_win_rate"):
+        out.append(("Best member win rate", f"{m['best_win_rate']:.0%}"))
 
-    # HTML conflict block
-    if conflicts:
-        conflict_items = "".join(
-            f'<li style="margin:4px 0;font-size:13px;color:#374151;">⚠ {c}</li>'
-            for c in conflicts
-        )
-        conflict_html = f"""
-      <div style="margin:12px 0 0;padding:14px 16px;background:#fff7ed;border-radius:6px;
-                  border-left:3px solid #ea580c;">
-        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#9a3412;">
-          ⚠ Potential Committee Conflicts
-        </p>
-        <ul style="margin:0;padding:0 0 0 16px;">{conflict_items}</ul>
-        <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">
-          These committees have oversight authority relevant to {ticker}'s sector.
-        </p>
-      </div>"""
-    elif member_data:
-        conflict_html = f"""
-      <div style="margin:12px 0 0;padding:12px 16px;background:#f0fdf4;border-radius:6px;
-                  border-left:3px solid #86efac;">
-        <p style="margin:0;font-size:13px;color:#166534;">
-          ✓ No committee conflicts flagged for {ticker}
-        </p>
-      </div>"""
-    else:
-        conflict_html = f"""
-      <div style="margin:12px 0 0;padding:12px 16px;background:#f9fafb;border-radius:6px;
-                  border-left:3px solid #d1d5db;">
-        <p style="margin:0;font-size:13px;color:#6b7280;">
-          Committee data unavailable for this member
-        </p>
-      </div>"""
-
-    context_html = ""
-    if context:
-        context_html = f"""
-      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
-                  border-left:4px solid #3b82f6;">
-        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
-                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
-      </div>"""
-
-    table_rows = _trade_rows_html([trade])
-    body = f"""
-      <p style="font-size:15px;color:#111;margin:0 0 16px;">
-        <strong>{member}</strong> has a <strong>{wr:.0%} historical win rate</strong>
-        ({wins}/{total} purchases beat SPY over {config.WIN_RATE_PRIMARY} days)
-        and just filed a new trade.
-      </p>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead>
-          <tr style="background:#f3f4f6;text-align:left;">
-            <th style="padding:8px 12px;">Member</th>
-            <th style="padding:8px 12px;">Ticker</th>
-            <th style="padding:8px 12px;">Type</th>
-            <th style="padding:8px 12px;">Date</th>
-            <th style="padding:8px 12px;">Amount</th>
-            <th style="padding:8px 12px;">Filing</th>
-          </tr>
-        </thead>
-        <tbody>{table_rows}</tbody>
-      </table>
-      <div style="margin:16px 0 0;padding:14px 16px;background:#fefce8;border-radius:6px;
-                  border-left:4px solid #eab308;">
-        <p style="margin:0;font-size:13px;color:#713f12;">
-          Win rate threshold: {config.WIN_RATE_MIN:.0%} ·
-          Min scored trades: {config.WIN_RATE_MIN_TRADES} ·
-          Benchmark window: {config.WIN_RATE_PRIMARY}d vs SPY
-        </p>
-      </div>
-      {conflict_html}{context_html}"""
-
-    html = _base_html(
-        title  = f"🏆 High Win-Rate — {member}",
-        accent = "#1e3a5f",
-        body   = body,
-    )
-    return subject, text, html
+    return out
 
 
-def _format_watchlist(alert: Alert, win_rates: dict) -> tuple[str, str, str]:
-    """Format a 🟢 Watchlist Alert with win-rate and committee conflict context."""
-    from committees import flag_conflicts, get_member_committees
+def _alert_card(alert: Alert, rank: int, with_ai: bool) -> tuple[str, str]:
+    """
+    Render one alert as a (plain_text, html) block for the digest.
 
-    trade   = alert.trades[0]
-    member  = trade["representative"]
-    ticker  = trade["ticker"]
-    tx_type = trade["type"].replace("_", " ").title()
-    owners  = sorted({t.get("owner", "") for t in alert.trades if t.get("owner")})
-    owner_str = f" ({', '.join(owners)})" if owners else ""
+    with_ai controls the Gemini call — only the top-ranked cards get one, so a
+    noisy day cannot burn the free-tier quota on low-conviction signals.
+    """
+    label     = TIER_LABELS.get(alert.tier, alert.tier.upper())
+    fg, bg    = TIER_COLORS.get(alert.tier, ("#6b7280", "#f3f4f6"))
+    m         = alert.meta
+    conflicts = _alert_conflicts(alert)
+    metrics   = _metrics(alert)
 
-    members   = sorted({t["representative"] for t in alert.trades})
-    direction = "buying" if trade["type"] == "purchase" else "selling"
-    context   = generate_alert_context(ticker, members, direction)
-
-    # Win-rate context
-    stats = win_rates.get(member, {})
-    total = stats.get("total", 0)
-    if total >= config.WIN_RATE_MIN_TRADES:
-        wr       = stats.get("win_rate", 0)
-        wins     = stats.get("wins", 0)
-        wr_str   = f"{wr:.0%} win rate ({wins}/{total} trades beat SPY over {config.WIN_RATE_PRIMARY}d)"
-        wr_color = "#16a34a" if wr >= config.WIN_RATE_MIN else "#6b7280"
-    else:
-        wr_str   = f"Insufficient data ({total} scored trades — need {config.WIN_RATE_MIN_TRADES} minimum)"
-        wr_color = "#9ca3af"
-
-    # Committee conflict context
-    conflicts   = flag_conflicts(member, ticker)
-    member_data = get_member_committees(member)
-    chamber     = member_data.get("chamber", "")
-
-    subject = (
-        f"👁️ WATCHLIST — {member} · "
-        f"{ticker} {tx_type.upper()}"
-    )
-
-    # Plain text conflict lines
-    conflict_text = ""
-    if conflicts:
-        conflict_text = "\nCommittee Conflicts:\n" + "\n".join(f"  ⚠ {c}" for c in conflicts)
-    elif member_data:
-        conflict_text = "\nCommittee Conflicts: None flagged for this ticker"
-    else:
-        conflict_text = "\nCommittee Conflicts: No committee data available"
-
-    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
-    text = (
-        f"WATCHLIST ALERT\n"
-        f"{'='*50}\n"
-        f"Member:    {member}{owner_str}\n"
-        f"Ticker:    {ticker}\n"
-        f"Type:      {tx_type}\n"
-        f"Date:      {trade['transaction_date']}\n"
-        f"Amount:    {_fmt_amount(trade['amount'])}\n"
-        f"Win Rate:  {wr_str}"
-        f"{conflict_text}\n\n"
-        f"Filing:    {trade['ptr_link']}"
-        f"{context_text}"
-    )
-
-    # HTML conflict block
-    if conflicts:
-        conflict_items = "".join(
-            f'<li style="margin:4px 0;font-size:13px;color:#374151;">⚠ {c}</li>'
-            for c in conflicts
-        )
-        conflict_html = f"""
-      <div style="margin:12px 0 0;padding:14px 16px;background:#fff7ed;border-radius:6px;
-                  border-left:3px solid #ea580c;">
-        <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#9a3412;">
-          ⚠ Potential Committee Conflicts
-        </p>
-        <ul style="margin:0;padding:0 0 0 16px;">{conflict_items}</ul>
-        <p style="margin:8px 0 0;font-size:11px;color:#9ca3af;">
-          These committees have oversight authority relevant to {ticker}'s sector.
-        </p>
-      </div>"""
-    elif member_data:
-        conflict_html = f"""
-      <div style="margin:12px 0 0;padding:12px 16px;background:#f0fdf4;border-radius:6px;
-                  border-left:3px solid #86efac;">
-        <p style="margin:0;font-size:13px;color:#166534;">
-          ✓ No committee conflicts flagged for {ticker}
-        </p>
-      </div>"""
-    else:
-        conflict_html = f"""
-      <div style="margin:12px 0 0;padding:12px 16px;background:#f9fafb;border-radius:6px;
-                  border-left:3px solid #d1d5db;">
-        <p style="margin:0;font-size:13px;color:#6b7280;">
-          Committee data unavailable for this member
-        </p>
-      </div>"""
-
-    context_html = ""
-    if context:
-        context_html = f"""
-      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
-                  border-left:4px solid #3b82f6;">
-        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
-                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
-      </div>"""
-
-    table_rows = _trade_rows_html(alert.trades)
-    body = f"""
-      <p style="font-size:15px;color:#111;margin:0 0 16px;">
-        <strong>{member}</strong> (manually tracked) filed a new trade.
-      </p>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead>
-          <tr style="background:#f3f4f6;text-align:left;">
-            <th style="padding:8px 12px;">Member</th>
-            <th style="padding:8px 12px;">Ticker</th>
-            <th style="padding:8px 12px;">Type</th>
-            <th style="padding:8px 12px;">Date</th>
-            <th style="padding:8px 12px;">Amount</th>
-            <th style="padding:8px 12px;">Filing</th>
-          </tr>
-        </thead>
-        <tbody>{table_rows}</tbody>
-      </table>
-      <div style="margin:16px 0 0;padding:14px 16px;background:#f9fafb;border-radius:6px;
-                  border-left:3px solid {wr_color};">
-        <p style="margin:0;font-size:13px;color:#374151;">
-          <strong>Historical win rate:</strong> {wr_str}
-        </p>
-        <p style="margin:6px 0 0;font-size:12px;color:#6b7280;">
-          Win rate measures how often purchases beat SPY over {config.WIN_RATE_PRIMARY} days.
-        </p>
-      </div>
-      {conflict_html}{context_html}"""
-
-    html = _base_html(
-        title  = f"👁️ Watchlist — {member}",
-        accent = "#1e3a5f",
-        body   = body,
-    )
-    return subject, text, html
-
-
-def _format_cross_cluster(alert: Alert) -> tuple[str, str, str]:
-    """Format a 🔗 Cross-Cluster Alert — congressional + CEO/CFO buying the same ticker."""
-    ticker  = alert.ticker
-    congress = [t for t in alert.trades if t.get("source") != "insider"]
     insider  = [t for t in alert.trades if t.get("source") == "insider"]
+    congress = [t for t in alert.trades if t.get("source") != "insider"]
 
-    # Days between first and last signal across both groups.
-    dates = sorted(t["transaction_date"] for t in alert.trades)
-    span  = (datetime.strptime(dates[-1], "%Y-%m-%d") -
-             datetime.strptime(dates[0],  "%Y-%m-%d")).days
-
-    cong_members = sorted({t["representative"] for t in congress})
-    context = generate_alert_context(ticker, cong_members, "buying")
-
-    subject = f"🔗 CROSS-SIGNAL — Congress + insider buying {ticker}"
+    context = generate_alert_context(alert, conflicts) if with_ai else None
 
     # ── Plain text ──
-    cong_lines = "\n".join(
-        f"  {t['representative']} | {t['transaction_date']} | {_fmt_amount(t['amount'])}"
-        for t in congress
-    )
-    ins_lines = "\n".join(
-        f"  {t['name']} ({t['title']}) | {t['transaction_date']} | {_fmt_amount(t['amount'])}"
-        for t in insider
-    )
-    context_text = f"\n\nWhy this matters:\n  {context}" if context else ""
-    text = (
-        f"CROSS-CLUSTER ALERT\n"
-        f"{'='*50}\n"
-        f"Ticker:    {ticker}\n"
-        f"Signal:    {len(congress)} congressional buy(s) + {len(insider)} CEO/CFO buy(s)\n"
-        f"Window:    {dates[0]} → {dates[-1]} ({span} days between first and last signal)\n\n"
-        f"Congressional buys:\n{cong_lines}\n\n"
-        f"Insider (CEO/CFO) buys:\n{ins_lines}\n\n"
-        f"Both Congress and company insiders are accumulating {ticker} at the same time."
-        f"{context_text}"
-    )
-
-    context_html = ""
+    text_lines = [
+        f"#{rank} · [{label}] {alert.ticker} · conviction {alert.score:.0f}/100",
+        f"  {alert.message.splitlines()[0]}",
+    ]
+    text_lines += [f"  {k}: {v}" for k, v in metrics]
+    if conflicts:
+        text_lines.append("  ⚠ Committee conflicts:")
+        text_lines += [f"      {c}" for c in conflicts]
+    text_lines.append("")
+    text_lines.append(_trade_rows_text(congress))
+    if insider:
+        text_lines.append("  Insider buys:")
+        text_lines += [
+            f"      {t['name']} ({t['title']}) | {t['transaction_date']} | {_fmt_amount(t['amount'])}"
+            for t in insider
+        ]
     if context:
-        context_html = f"""
-      <div style="margin:16px 0 0;padding:14px 16px;background:#eff6ff;border-radius:6px;
-                  border-left:4px solid #3b82f6;">
-        <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#1d4ed8;
-                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
-        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
-      </div>"""
+        text_lines += ["", f"  Why this matters: {context}"]
+    text = "\n".join(text_lines)
 
     # ── HTML ──
-    cong_rows = "".join(
+    metric_cells = "".join(
         f"""
-        <tr>
-          <td style="padding:6px 12px;">{t['representative']}</td>
-          <td style="padding:6px 12px;">{t['transaction_date']}</td>
-          <td style="padding:6px 12px;">{_fmt_amount(t['amount'])}</td>
-          <td style="padding:6px 12px;"><a href="{t['ptr_link']}" style="color:#2563eb;">Filing ↗</a></td>
-        </tr>"""
-        for t in congress
+        <td style="padding:8px 12px;vertical-align:top;">
+          <p style="margin:0;font-size:10px;color:#6b7280;text-transform:uppercase;
+                    letter-spacing:.05em;">{k}</p>
+          <p style="margin:2px 0 0;font-size:14px;font-weight:600;color:#111;">{escape(v)}</p>
+        </td>"""
+        for k, v in metrics
     )
-    ins_rows = "".join(
-        f"""
+    metrics_html = f"""
+      <table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:6px;
+                    margin:12px 0;"><tr>{metric_cells}</tr></table>""" if metrics else ""
+
+    conflict_html = ""
+    if conflicts:
+        items = "".join(
+            f'<li style="margin:3px 0;font-size:12px;color:#374151;">{escape(c)}</li>'
+            for c in conflicts
+        )
+        conflict_html = f"""
+      <div style="margin:12px 0;padding:12px 14px;background:#fff7ed;border-radius:6px;
+                  border-left:3px solid #ea580c;">
+        <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#9a3412;">
+          ⚠ Committees with oversight relevant to {alert.ticker}
+        </p>
+        <ul style="margin:0;padding:0 0 0 16px;">{items}</ul>
+      </div>"""
+
+    insider_html = ""
+    if insider:
+        ins_rows = "".join(
+            f"""
         <tr>
-          <td style="padding:6px 12px;">{t['name']}</td>
-          <td style="padding:6px 12px;">{t['title']}</td>
+          <td style="padding:6px 12px;">{escape(t['name'])}</td>
+          <td style="padding:6px 12px;">{escape(t['title'])}</td>
           <td style="padding:6px 12px;">{t['transaction_date']}</td>
           <td style="padding:6px 12px;font-weight:600;">{_fmt_amount(t['amount'])}</td>
           <td style="padding:6px 12px;"><a href="{t['ptr_link']}" style="color:#2563eb;">Filing ↗</a></td>
         </tr>"""
-        for t in insider
-    )
-
-    body = f"""
-      <p style="font-size:15px;color:#111;margin:0 0 16px;">
-        <strong>{ticker}</strong> is being bought by <strong>{len(congress)} member(s) of Congress</strong>
-        and <strong>{len(insider)} company insider(s) (CEO/CFO)</strong> within a
-        {config.CLUSTER_DAYS}-day window — a combined-conviction signal.
-      </p>
-      <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#374151;">Congressional buys</p>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:18px;">
+            for t in insider
+        )
+        insider_html = f"""
+      <p style="margin:14px 0 6px;font-size:12px;font-weight:600;color:#374151;">Insider (CEO/CFO) buys</p>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
         <thead>
           <tr style="background:#f3f4f6;text-align:left;">
-            <th style="padding:8px 12px;">Member</th>
-            <th style="padding:8px 12px;">Date</th>
-            <th style="padding:8px 12px;">Amount</th>
-            <th style="padding:8px 12px;">Filing</th>
-          </tr>
-        </thead>
-        <tbody>{cong_rows}</tbody>
-      </table>
-      <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#374151;">Insider (CEO/CFO) buys</p>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;">
-        <thead>
-          <tr style="background:#f3f4f6;text-align:left;">
-            <th style="padding:8px 12px;">Insider</th>
-            <th style="padding:8px 12px;">Title</th>
-            <th style="padding:8px 12px;">Date</th>
-            <th style="padding:8px 12px;">Value</th>
-            <th style="padding:8px 12px;">Filing</th>
+            <th style="padding:7px 12px;">Insider</th>
+            <th style="padding:7px 12px;">Title</th>
+            <th style="padding:7px 12px;">Date</th>
+            <th style="padding:7px 12px;">Value</th>
+            <th style="padding:7px 12px;">Filing</th>
           </tr>
         </thead>
         <tbody>{ins_rows}</tbody>
-      </table>
-      <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">
-        {span} days between first and last signal · Window: {config.CLUSTER_DAYS} days ·
-        Insider data from openinsider.com
-      </p>{context_html}"""
+      </table>"""
 
-    html = _base_html(
-        title  = f"🔗 Cross-Signal — {ticker}",
-        accent = "#5b21b6",
-        body   = body,
-    )
-    return subject, text, html
+    context_html = ""
+    if context:
+        context_html = f"""
+      <div style="margin:12px 0 0;padding:12px 14px;background:#eff6ff;border-radius:6px;
+                  border-left:4px solid #3b82f6;">
+        <p style="margin:0 0 6px;font-size:10px;font-weight:600;color:#1d4ed8;
+                  text-transform:uppercase;letter-spacing:.06em;">AI Context · Gemini + Google Search</p>
+        <p style="margin:0;font-size:13px;color:#1e3a5f;line-height:1.5;">{escape(context)}</p>
+      </div>"""
+
+    cong_label = ""
+    if insider:
+        cong_label = '<p style="margin:14px 0 6px;font-size:12px;font-weight:600;color:#374151;">Congressional buys</p>'
+
+    html = f"""
+    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px 18px;margin:0 0 16px;">
+      <div style="margin:0 0 8px;">
+        <span style="font-size:13px;color:#9ca3af;font-weight:600;">#{rank}</span>
+        <span style="background:{bg};color:{fg};font-size:10px;font-weight:700;
+                     padding:2px 7px;border-radius:4px;margin:0 6px;">{label}</span>
+        <span style="font-size:18px;font-weight:700;color:#111;">{alert.ticker}</span>
+        <span style="float:right;font-size:13px;font-weight:700;color:{fg};">
+          {alert.score:.0f}<span style="color:#9ca3af;font-weight:400;">/100</span>
+        </span>
+      </div>
+      <p style="margin:0;font-size:13px;color:#4b5563;">{escape(alert.message.splitlines()[0])}</p>
+      {metrics_html}{conflict_html}{cong_label}
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:#f3f4f6;text-align:left;">
+            <th style="padding:7px 12px;">Member</th>
+            <th style="padding:7px 12px;">Ticker</th>
+            <th style="padding:7px 12px;">Type</th>
+            <th style="padding:7px 12px;">Date</th>
+            <th style="padding:7px 12px;">Amount</th>
+            <th style="padding:7px 12px;">Filing</th>
+          </tr>
+        </thead>
+        <tbody>{_trade_rows_html(congress)}</tbody>
+      </table>
+      {insider_html}{context_html}
+    </div>"""
+
+    return text, html
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-def send_alerts(alerts: list[Alert], win_rates: dict | None = None) -> None:
+def send_digest(alerts: list[Alert]) -> None:
     """
-    Send one email per alert. Called by monitor.py on each poll cycle.
-    win_rates dict is passed through for win-rate alert formatting.
+    Send every alert from a run as one email, ranked by conviction score.
+
+    One email per alert meant a busy day produced a dozen messages that all went
+    unread. Ranking puts the strongest signal in the subject line so the inbox
+    alone is enough to triage.
     """
     if not alerts:
         print("  No alerts to send.")
         return
 
-    win_rates = win_rates or {}
+    ranked = sorted(alerts, key=lambda a: a.score, reverse=True)
+    top    = ranked[0]
 
-    for alert in alerts:
-        if alert.tier == "cluster":
-            subject, text, html = _format_cluster(alert)
-        elif alert.tier == "winrate":
-            subject, text, html = _format_winrate(alert, win_rates)
-        elif alert.tier == "watchlist":
-            subject, text, html = _format_watchlist(alert, win_rates)
-        elif alert.tier == "cross_cluster":
-            subject, text, html = _format_cross_cluster(alert)
-        else:
-            continue
+    tier_counts = {}
+    for a in ranked:
+        label = TIER_LABELS.get(a.tier, a.tier.upper())
+        tier_counts[label] = tier_counts.get(label, 0) + 1
+    breakdown = " · ".join(f"{n} {label.lower()}" for label, n in tier_counts.items())
 
-        _send_email(subject, text, html)
+    subject = (
+        f"⚡ {len(ranked)} signal{'s' if len(ranked) != 1 else ''} — "
+        f"top: {top.ticker} {TIER_LABELS.get(top.tier, top.tier)} ({top.score:.0f}/100)"
+    )
+
+    cards = [
+        _alert_card(a, rank=i + 1, with_ai=i < config.DIGEST_AI_TOP_N)
+        for i, a in enumerate(ranked)
+    ]
+
+    text = (
+        "CONGRESSIONAL TRADE MONITOR — Signal Digest\n"
+        f"{datetime.now().strftime('%B %d, %Y %H:%M')}\n"
+        f"{'='*60}\n"
+        f"{len(ranked)} alert(s): {breakdown}\n"
+        "Ranked by conviction score (size, participants, freshness, track record).\n\n"
+        + "\n\n".join(t for t, _ in cards)
+    )
+
+    body = f"""
+      <p style="font-size:14px;color:#374151;margin:0 0 4px;">
+        <strong>{len(ranked)} alert(s)</strong> — {escape(breakdown)}
+      </p>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 20px;">
+        Ranked by conviction score: disclosed size, participant count, disclosure
+        freshness, and member track record.
+      </p>
+      {''.join(h for _, h in cards)}"""
+
+    html = _base_html(
+        title  = f"{len(ranked)} Signal{'s' if len(ranked) != 1 else ''} — top: {top.ticker}",
+        accent = "#1e3a5f",
+        body   = body,
+    )
+    _send_email(subject, text, html)
 
 
 def _sector_net_activity(trades: list[dict]) -> list[tuple[str, int, int]]:
@@ -748,10 +558,11 @@ def generate_weekly_intelligence(
     return _gemini_generate(prompt, max_tokens=300)
 
 
-def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
+def send_summary(alerts: list[Alert], trades: list[dict], performance: str | None = None) -> None:
     """
     Send the weekly Sunday digest email.
-    Sections: sector activity, strongest signals, legislative intelligence (Gemini).
+    Sections: sector activity, strongest signals, alert performance vs SPY
+    (from history.format_summary), legislative intelligence (Gemini).
     """
     now      = datetime.now().strftime("%B %d, %Y")
     n_alert  = len(alerts)
@@ -779,13 +590,15 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
         text_lines.append(f"  {sector:<20} {buys} buys  {sells} sells  {arrow}")
 
     text_lines += ["", "── Strongest Signals ──"]
-    tier_labels = {"cluster": "CLUSTER", "cross_cluster": "CROSS", "winrate": "WIN-RATE", "watchlist": "WATCHLIST"}
     if alerts:
         for a in alerts[:5]:
-            label = tier_labels.get(a.tier, a.tier.upper())
+            label = TIER_LABELS.get(a.tier, a.tier.upper())
             text_lines.append(f"  [{label}] {a.ticker}: {a.message.splitlines()[0]}")
     else:
         text_lines.append("  No alerts this week.")
+
+    if performance:
+        text_lines += ["", "── Alert Performance ──", performance]
 
     if legislative_text:
         text_lines += ["", "── Legislative Intelligence (Gemini) ──", legislative_text]
@@ -810,17 +623,11 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
           <td style="padding:7px 12px;font-size:13px;text-align:center;">{net_html}</td>
         </tr>"""
 
-    tier_colors = {
-        "cluster":       ("#dc2626", "#fee2e2"),
-        "cross_cluster": ("#7c3aed", "#ede9fe"),
-        "winrate":       ("#d97706", "#fef3c7"),
-        "watchlist":     ("#16a34a", "#dcfce7"),
-    }
     signal_items = ""
     if alerts:
         for a in alerts[:5]:
-            fg, bg = tier_colors.get(a.tier, ("#6b7280", "#f3f4f6"))
-            label  = tier_labels.get(a.tier, a.tier.upper())
+            fg, bg = TIER_COLORS.get(a.tier, ("#6b7280", "#f3f4f6"))
+            label  = TIER_LABELS.get(a.tier, a.tier.upper())
             first_line = a.message.splitlines()[0]
             signal_items += f"""
         <li style="margin:6px 0;padding:10px 14px;background:#f9fafb;border-radius:6px;
@@ -831,6 +638,15 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
         </li>"""
     else:
         signal_items = '<li style="color:#6b7280;font-size:13px;padding:8px 0;">No alerts this week.</li>'
+
+    if performance:
+        performance_html = f"""
+      <h2 style="font-size:14px;font-weight:600;color:#111;margin:24px 0 10px;">Alert Performance</h2>
+      <pre style="margin:0;padding:14px 16px;background:#f9fafb;border-radius:6px;
+                  border-left:4px solid #6b7280;font-size:12px;line-height:1.5;
+                  color:#374151;overflow-x:auto;white-space:pre;">{escape(performance)}</pre>"""
+    else:
+        performance_html = ""
 
     if legislative_text:
         formatted = escape(legislative_text).replace("\n", "<br>")
@@ -875,7 +691,7 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
 
       <h2 style="font-size:14px;font-weight:600;color:#111;margin:0 0 10px;">Strongest Signals</h2>
       <ul style="list-style:none;margin:0 0 4px;padding:0;">{signal_items}</ul>
-      {legislative_html}"""
+      {performance_html}{legislative_html}"""
 
     html = _base_html(
         title  = f"Weekly Digest — {now}",
@@ -887,34 +703,86 @@ def send_summary(alerts: list[Alert], trades: list[dict]) -> None:
 
 # ── Main (test mode) ──────────────────────────────────────────────────────────
 
-def main():
-    """
-    Send a test watchlist alert to verify email settings.
-    Edit config.py with real credentials before running.
-    """
-    print("Sending test alert...")
-    test_alert = Alert(
-        tier    = "watchlist",
+def _sample_alerts() -> list[Alert]:
+    """Two alerts of different strength, for checking digest ranking and layout."""
+    from analyzer import enrich_and_score
+
+    strong = Alert(
+        tier    = "cross_cluster",
         ticker  = "NVDA",
-        trades  = [{
-            "chamber":           "Senate",
-            "representative":    "Sheldon Whitehouse",
-            "ticker":            "NVDA",
-            "asset_description": "NVIDIA Corporation - Common Stock",
-            "type":              "sale_partial",
-            "transaction_date":  "2026-05-08",
-            "disclosure_date":   "06/02/2026",
-            "amount":            "$100,001 - $250,000",
-            "ptr_link":          "https://efdsearch.senate.gov/search/view/ptr/4aa0094d-d9da-4a05-aa13-6d9f5d376105/",
-            "owner":             "Self",
-        }],
-        message = "🟢 WATCHLIST: Sheldon Whitehouse — NVDA SALE_PARTIAL on 2026-05-08 ($100,001 - $250,000) [Self]",
+        trades  = [
+            {
+                "chamber": "Senate", "representative": "Tommy Tuberville", "ticker": "NVDA",
+                "asset_description": "NVIDIA Corporation - Common Stock", "type": "purchase",
+                "transaction_date": "2026-07-20", "disclosure_date": "2026-07-28",
+                "amount": "$250,001 - $500,000", "owner": "Self", "source": "congress",
+                "ptr_link": "https://efdsearch.senate.gov/search/view/ptr/4aa0094d/",
+            },
+            {
+                "chamber": "House", "representative": "Josh Gottheimer", "ticker": "NVDA",
+                "asset_description": "NVIDIA Corporation", "type": "purchase",
+                "transaction_date": "2026-07-24", "disclosure_date": "2026-08-01",
+                "amount": "$500,001 - $1,000,000", "owner": "", "source": "congress",
+                "ptr_link": "https://disclosures-clerk.house.gov/20026543.pdf",
+            },
+            {
+                "name": "Jensen Huang", "title": "CEO", "ticker": "NVDA", "type": "purchase",
+                "transaction_date": "2026-07-22", "disclosure_date": "2026-07-24",
+                "amount": "$2,400,000", "source": "insider",
+                "ptr_link": "http://openinsider.com/screener?s=NVDA",
+            },
+        ],
+        message = "🔗 CROSS-SIGNAL: NVDA — 2 congressional buy(s) + 1 CEO/CFO buy(s), 4 days apart",
     )
 
-    send_alerts([test_alert], win_rates={})
-    print("\n✓ Check your inbox. If nothing arrived, check EMAIL_SENDER/EMAIL_PASSWORD in config.py")
-    print("  Gmail requires an App Password — not your regular login password.")
-    print("  Enable at: myaccount.google.com/apppasswords\n")
+    weak = Alert(
+        tier    = "watchlist",
+        ticker  = "T",
+        trades  = [{
+            "chamber": "Senate", "representative": "Sheldon Whitehouse", "ticker": "T",
+            "asset_description": "AT&T Inc.", "type": "purchase",
+            "transaction_date": "2026-06-14", "disclosure_date": "2026-07-26",
+            "amount": "$1,001 - $15,000", "owner": "Spouse",
+            "ptr_link": "https://efdsearch.senate.gov/search/view/ptr/4aa0094d/",
+        }],
+        message = "👁️ WATCHLIST: Sheldon Whitehouse — T PURCHASE on 2026-06-14 ($1,001 - $15,000) [Spouse]",
+    )
+
+    for a in (strong, weak):
+        enrich_and_score(a, win_rates={})
+    return [strong, weak]
+
+
+def main():
+    """
+    Render the digest to an HTML file without sending, so layout and ranking can
+    be checked without spending an email or a Gemini call. Pass --send to
+    actually deliver it and verify SMTP credentials.
+    """
+    import sys
+
+    alerts = _sample_alerts()
+
+    if "--send" in sys.argv:
+        print("Sending test digest...")
+        send_digest(alerts)
+        print("\n✓ Check your inbox. If nothing arrived, check ALERT_EMAIL_SENDER/PASSWORD in .env")
+        print("  Gmail requires an App Password — not your regular login password.")
+        print("  Enable at: myaccount.google.com/apppasswords\n")
+        return
+
+    cards = [_alert_card(a, rank=i + 1, with_ai=False) for i, a in enumerate(alerts)]
+    html  = _base_html("Digest Preview", "#1e3a5f", "".join(h for _, h in cards))
+
+    out = "digest_preview.html"
+    with open(out, "w") as f:
+        f.write(html)
+
+    for text, _ in cards:
+        print(text)
+        print()
+    print(f"✓ Wrote {out} — open it to check layout.")
+    print("  Re-run with --send to email it instead.")
 
 
 if __name__ == "__main__":

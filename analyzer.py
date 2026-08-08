@@ -15,8 +15,11 @@ Public interface:
 """
 
 import json
+import math
 import os
+import re
 import requests
+import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -29,24 +32,73 @@ import config
 
 @dataclass
 class Alert:
-    tier:        str          # "cluster" | "winrate" | "watchlist"
+    tier:        str          # "cluster" | "winrate" | "watchlist" | "cross_cluster"
     ticker:      str
     trades:      list[dict]   # the trades that triggered this alert
     message:     str          # human-readable summary
     fired_at:    str = field(default_factory=lambda: datetime.now().isoformat())
+    score:       float = 0.0  # 0–100 conviction, set by enrich_and_score()
+    meta:        dict = field(default_factory=dict)  # enrichment: dollars, lag, price move
+
+
+# ── Trade field helpers ───────────────────────────────────────────────────────
+
+def parse_amount_value(s: str) -> float:
+    """
+    Numeric midpoint of a disclosure amount range, in dollars.
+    Disclosures report brackets ("$1,001 - $15,000"), not exact figures, so the
+    midpoint is the best available point estimate. Returns 0.0 when unparseable.
+    """
+    if not s or s.strip().lower().startswith("none"):
+        return 0.0
+    nums = [float(n.replace(",", "")) for n in re.findall(r"[\d,]+", s)]
+    if not nums:
+        return 0.0
+    return (nums[0] + nums[1]) / 2 if len(nums) >= 2 else nums[0]
+
+
+def disclosure_lag_days(trade: dict) -> int | None:
+    """
+    Days between when a trade was executed and when it was disclosed.
+    Congress may file up to 45 days late, so a small lag means the signal is
+    still fresh while a large one means the move is likely already priced in.
+    Returns None when the disclosure date is missing or unparseable.
+    """
+    disclosed = trade.get("disclosure_date", "")
+    if not disclosed:
+        return None
+    try:
+        tx   = datetime.strptime(trade["transaction_date"], "%Y-%m-%d")
+        disc = datetime.strptime(disclosed[:10], "%Y-%m-%d")
+    except (ValueError, KeyError):
+        return None
+    return max(0, (disc - tx).days)
 
 
 # ── Win-rate scoring ──────────────────────────────────────────────────────────
 
-def _get_price(ticker: str, date: datetime) -> float | None:
-    """
-    Get closing price for a ticker on or near a given date using yfinance.
-    Fetches a 10-day window to catch the next trading day after weekends/holidays.
-    Suppresses yfinance download noise.
-    """
+# Win-rate scoring, price-move enrichment and alert-history all look up the same
+# (ticker, date) pairs — SPY especially, once per scored trade. One cache across
+# them turns the dominant cost of a run into a handful of downloads.
+_PRICE_CACHE: dict[tuple[str, str, str], float | None] = {}
+
+# run_forever() keeps one process alive indefinitely, and each poll adds entries
+# for dates it has never seen, so the cache needs a ceiling. Evicting the oldest
+# tenth on overflow keeps the hot working set (the current alert window) intact.
+_PRICE_CACHE_MAX = 20_000
+
+
+def _cache_price(key: tuple[str, str, str], price: float | None) -> float | None:
+    if len(_PRICE_CACHE) >= _PRICE_CACHE_MAX:
+        for stale in list(_PRICE_CACHE)[: _PRICE_CACHE_MAX // 10]:
+            del _PRICE_CACHE[stale]
+    _PRICE_CACHE[key] = price
+    return price
+
+
+def _download_closes(ticker: str, start: datetime, end: datetime):
+    """Download a close-price series, suppressing yfinance's download noise."""
     import logging, contextlib, io as _io
-    start = date
-    end   = date + timedelta(days=10)
     with contextlib.redirect_stderr(_io.StringIO()):
         try:
             logging.disable(logging.CRITICAL)
@@ -65,7 +117,36 @@ def _get_price(ticker: str, date: datetime) -> float | None:
     close = df["Close"]
     if hasattr(close, "columns"):
         close = close.iloc[:, 0]
-    return float(close.iloc[0]) if not close.empty else None
+    return close if not close.empty else None
+
+
+def _get_price(ticker: str, date: datetime) -> float | None:
+    """
+    Get closing price for a ticker on or near a given date using yfinance.
+    Fetches a 10-day window and takes the first close in it, so a date landing
+    on a weekend or holiday resolves to the next trading day.
+    Memoized for the life of the process.
+    """
+    cache_key = (ticker.upper(), date.strftime("%Y-%m-%d"), "first")
+    if cache_key in _PRICE_CACHE:
+        return _PRICE_CACHE[cache_key]
+
+    closes = _download_closes(ticker, date, date + timedelta(days=10))
+    return _cache_price(cache_key, float(closes.iloc[0]) if closes is not None else None)
+
+
+def latest_price(ticker: str) -> float | None:
+    """
+    Most recent close for a ticker — the last close in a trailing 10-day window,
+    so a long weekend or holiday still resolves.
+    """
+    today = datetime.now()
+    cache_key = (ticker.upper(), today.strftime("%Y-%m-%d"), "last")
+    if cache_key in _PRICE_CACHE:
+        return _PRICE_CACHE[cache_key]
+
+    closes = _download_closes(ticker, today - timedelta(days=10), today + timedelta(days=1))
+    return _cache_price(cache_key, float(closes.iloc[-1]) if closes is not None else None)
 
 
 def _score_trade(trade: dict, window_days: int) -> bool | None:
@@ -324,41 +405,57 @@ def find_cross_signals(
     Find tickers bought by BOTH a member of Congress and a company insider
     (CEO/CFO) within `window_days` of each other.
 
+    Proximity is pairwise: a trade qualifies if it is within `window_days` of at
+    least one trade on the *other* side. Measuring the span across every trade on
+    the ticker instead would let one unrelated older buy push a genuinely tight
+    Congress/insider pairing outside the window and discard the whole signal.
+
     Only congressional purchases count on the congressional side; insider trades
     are all open-market buys by construction (openinsider_fetcher).
 
-    Returns one match dict per qualifying ticker:
+    Returns one match dict per qualifying ticker, carrying only the trades that
+    are actually part of the overlap:
       {ticker, congress: [...], insider: [...], first: datetime, last: datetime, span_days}
     Pure function — no I/O — so the dashboard can reuse it.
     """
-    cong_by_ticker: dict[str, list[dict]] = defaultdict(list)
-    for t in congress_trades:
-        if t["type"] == "purchase":
-            cong_by_ticker[t["ticker"].upper()].append(t)
+    def by_ticker(trades: list[dict], purchases_only: bool) -> dict[str, list[tuple[dict, datetime]]]:
+        grouped: dict[str, list[tuple[dict, datetime]]] = defaultdict(list)
+        for t in trades:
+            if purchases_only and t["type"] != "purchase":
+                continue
+            grouped[t["ticker"].upper()].append(
+                (t, datetime.strptime(t["transaction_date"], "%Y-%m-%d"))
+            )
+        return grouped
 
-    ins_by_ticker: dict[str, list[dict]] = defaultdict(list)
-    for t in insider_trades:
-        ins_by_ticker[t["ticker"].upper()].append(t)
+    cong_by_ticker = by_ticker(congress_trades, purchases_only=True)
+    ins_by_ticker  = by_ticker(insider_trades,  purchases_only=False)
 
     matches = []
     for ticker in set(cong_by_ticker) & set(ins_by_ticker):
         congress = cong_by_ticker[ticker]
         insider  = ins_by_ticker[ticker]
-        dates = [
-            datetime.strptime(t["transaction_date"], "%Y-%m-%d")
-            for t in congress + insider
-        ]
+
+        def near(date: datetime, others: list[tuple[dict, datetime]]) -> bool:
+            return any(abs((date - other).days) <= window_days for _, other in others)
+
+        cong_hit = [(t, d) for t, d in congress if near(d, insider)]
+        ins_hit  = [(t, d) for t, d in insider  if near(d, congress)]
+
+        # The relation is symmetric, so either side being non-empty implies both.
+        if not cong_hit:
+            continue
+
+        dates = [d for _, d in cong_hit + ins_hit]
         first, last = min(dates), max(dates)
-        span_days = (last - first).days
-        if span_days <= window_days:
-            matches.append({
-                "ticker":    ticker,
-                "congress":  congress,
-                "insider":   insider,
-                "first":     first,
-                "last":      last,
-                "span_days": span_days,
-            })
+        matches.append({
+            "ticker":    ticker,
+            "congress":  [t for t, _ in cong_hit],
+            "insider":   [t for t, _ in ins_hit],
+            "first":     first,
+            "last":      last,
+            "span_days": (last - first).days,
+        })
 
     return matches
 
@@ -394,6 +491,113 @@ def detect_cross_cluster_alerts(
     return alerts
 
 
+# ── Conviction scoring ────────────────────────────────────────────────────────
+
+def _price_move(ticker: str, since: datetime) -> tuple[float | None, float | None]:
+    """
+    Percent move in `ticker` and in SPY from `since` to the latest close.
+    Answers "have I already missed it?" — the disclosure lag means the market
+    has often had weeks to react before an alert can fire.
+    """
+    entry = _get_price(ticker, since)
+    now   = latest_price(ticker)
+    spy_entry = _get_price("SPY", since)
+    spy_now   = latest_price("SPY")
+
+    pct     = (now - entry) / entry * 100 if entry and now else None
+    spy_pct = (spy_now - spy_entry) / spy_entry * 100 if spy_entry and spy_now else None
+    return pct, spy_pct
+
+
+def enrich_and_score(alert: Alert, win_rates: dict[str, dict] | None = None) -> None:
+    """
+    Populate alert.meta with the facts a trader needs to triage, and alert.score
+    with a 0–100 conviction number. Mutates in place.
+
+    Scoring is deliberately transparent (weighted components in config, no
+    fitted model) because there is no outcome data to fit against yet —
+    history.py accumulates it so these weights can be checked later.
+    """
+    win_rates = win_rates or {}
+    w = config.SCORE_WEIGHTS
+
+    insider  = [t for t in alert.trades if t.get("source") == "insider"]
+    congress = [t for t in alert.trades if t.get("source") != "insider"]
+
+    members = sorted({t["representative"] for t in congress if t.get("representative")})
+    dollar_total = sum(parse_amount_value(t.get("amount", "")) for t in alert.trades)
+
+    # Congressional lags only — insiders file Form 4 within two business days,
+    # so mixing the two would wash out the staleness signal.
+    lags = [d for d in (disclosure_lag_days(t) for t in congress) if d is not None]
+    median_lag = int(statistics.median(lags)) if lags else None
+
+    dates = sorted(t["transaction_date"] for t in alert.trades)
+    first_date = dates[0] if dates else None
+
+    pct = spy_pct = None
+    if first_date:
+        try:
+            pct, spy_pct = _price_move(alert.ticker, datetime.strptime(first_date, "%Y-%m-%d"))
+        except ValueError:
+            pass
+
+    best_win_rate = 0.0
+    for m in members:
+        s = win_rates.get(m, {})
+        if s.get("total", 0) >= config.WIN_RATE_MIN_TRADES:
+            best_win_rate = max(best_win_rate, s.get("win_rate", 0.0))
+
+    has_top_insider = any(
+        re.search(r"\b(CEO|CFO|Chief Executive|Chief Financial)\b", t.get("title", ""), re.I)
+        for t in insider
+    )
+
+    alert.meta = {
+        "n_members":          len(members),
+        "n_insiders":         len(insider),
+        "members":            members,
+        "dollar_total":       dollar_total,
+        "median_lag_days":    median_lag,
+        "first_date":         first_date,
+        "last_date":          dates[-1] if dates else None,
+        "pct_since_trade":    pct,
+        "spy_since_trade":    spy_pct,
+        "excess_since_trade": (pct - spy_pct) if pct is not None and spy_pct is not None else None,
+        "best_win_rate":      best_win_rate,
+        "has_top_insider":    has_top_insider,
+    }
+
+    # ── Components, each scaled to 0–1 then weighted ──
+    floor = 3.0  # log10($1,000) — below this a trade is a rounding error
+    cap   = math.log10(config.SCORE_DOLLAR_CAP)
+    if dollar_total > 0:
+        dollar_frac = (math.log10(max(dollar_total, 1)) - floor) / (cap - floor)
+    else:
+        dollar_frac = 0.0
+    dollar_frac = min(1.0, max(0.0, dollar_frac))
+
+    participants = len(members) + len(insider)
+    part_frac = min(1.0, participants / config.SCORE_PARTICIPANT_CAP)
+
+    # No disclosure date is missing data, not evidence of staleness — score it
+    # neutral so unparsed filings aren't silently buried.
+    fresh_frac = (
+        1.0 - min(median_lag, config.CLUSTER_DAYS) / config.CLUSTER_DAYS
+        if median_lag is not None else 0.5
+    )
+
+    score = (
+        w["tier_base"].get(alert.tier, 10)
+        + w["dollars"]      * dollar_frac
+        + w["participants"] * part_frac
+        + w["freshness"]    * fresh_frac
+        + w["track_record"] * best_win_rate
+        + (w["seniority"] if has_top_insider else 0)
+    )
+    alert.score = round(min(100.0, max(0.0, score)), 1)
+
+
 # ── Seen-trades deduplication (Gist-backed for GitHub Actions) ───────────────
 
 def _gist_enabled() -> bool:
@@ -401,66 +605,113 @@ def _gist_enabled() -> bool:
     return bool(os.getenv("GIST_TOKEN") and os.getenv("GIST_ID"))
 
 
-def _load_seen() -> set[str]:
+def _gist_headers() -> dict:
+    return {
+        "Authorization": f"token {os.getenv('GIST_TOKEN')}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+
+def state_read(filename: str, default):
     """
-    Load already-alerted trade keys.
-    Reads from GitHub Gist if credentials available, otherwise local file.
+    Read a JSON state file from the GitHub Gist when credentials are present,
+    otherwise from a local file of the same name. Returns `default` if absent
+    or unreadable. A single Gist holds every state file this project keeps.
     """
     if _gist_enabled():
         try:
-            gist_id = os.getenv("GIST_ID")
-            token   = os.getenv("GIST_TOKEN")
             resp = requests.get(
-                f"https://api.github.com/gists/{gist_id}",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github.v3+json",
-                },
+                f"https://api.github.com/gists/{os.getenv('GIST_ID')}",
+                headers=_gist_headers(),
                 timeout=15,
             )
             resp.raise_for_status()
-            content = resp.json()["files"]["seen_trades.json"]["content"]
-            return set(json.loads(content))
+            files = resp.json()["files"]
+            if filename not in files:
+                return default
+            return json.loads(files[filename]["content"])
         except Exception as e:
-            print(f"  ⚠ Could not load Gist state: {e} — starting fresh")
-            return set()
+            print(f"  ⚠ Could not load Gist state ({filename}): {e} — starting fresh")
+            return default
 
-    # Local file fallback
-    if not os.path.exists(config.SEEN_TRADES_FILE):
-        return set()
+    if not os.path.exists(filename):
+        return default
     try:
-        with open(config.SEEN_TRADES_FILE) as f:
-            return set(json.load(f))
+        with open(filename) as f:
+            return json.load(f)
     except Exception:
-        return set()
+        return default
+
+
+def state_write(filename: str, data) -> None:
+    """Persist a JSON state file to the Gist when available, else a local file."""
+    content = json.dumps(data, indent=2)
+
+    if _gist_enabled():
+        try:
+            requests.patch(
+                f"https://api.github.com/gists/{os.getenv('GIST_ID')}",
+                headers=_gist_headers(),
+                json={"files": {filename: {"content": content}}},
+                timeout=15,
+            )
+            print(f"  ✓ State saved to Gist ({filename})")
+        except Exception as e:
+            print(f"  ⚠ Could not save Gist state ({filename}): {e}")
+        return
+
+    with open(filename, "w") as f:
+        f.write(content)
+
+
+# Every seen-key embeds the transaction date(s) it was built from, in ISO form:
+#   trade        → "Larsen, Rick|APH|2026-07-08|purchase"
+#   cluster      → "cluster|APH|buy|<trade key>|<trade key>|..."
+#   crosscluster → "crosscluster|APH|<participant key>|..."
+# so the newest date in a key dates the key itself, whatever its shape.
+_KEY_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _prune_seen(seen: set[str], today: datetime | None = None) -> set[str]:
+    """
+    Drop seen-keys too old to ever match again.
+
+    Alerts only fire on trades inside config.FETCH_DAYS, so once a key's newest
+    trade date falls outside SEEN_RETENTION_DAYS it cannot be re-detected and
+    keeping it only grows the state file toward the Gist truncation limit.
+    Keys with no parseable date are kept — an unrecognized shape should never be
+    silently discarded, since dropping a live key means re-alerting it.
+    """
+    cutoff = (today or datetime.now()) - timedelta(days=config.SEEN_RETENTION_DAYS)
+
+    kept = set()
+    for key in seen:
+        dates = _KEY_DATE_RE.findall(key)
+        if not dates:
+            kept.add(key)
+            continue
+        try:
+            newest = datetime.strptime(max(dates), "%Y-%m-%d")
+        except ValueError:
+            kept.add(key)
+            continue
+        if newest >= cutoff:
+            kept.add(key)
+    return kept
+
+
+def _load_seen() -> set[str]:
+    """Load already-alerted trade keys."""
+    return set(state_read(config.SEEN_TRADES_FILE, []))
 
 
 def _save_seen(seen: set[str]) -> None:
-    """
-    Persist seen trade keys.
-    Writes to GitHub Gist if credentials available, otherwise local file.
-    """
-    if _gist_enabled():
-        try:
-            gist_id = os.getenv("GIST_ID")
-            token   = os.getenv("GIST_TOKEN")
-            requests.patch(
-                f"https://api.github.com/gists/{gist_id}",
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github.v3+json",
-                },
-                json={"files": {"seen_trades.json": {"content": json.dumps(sorted(seen), indent=2)}}},
-                timeout=15,
-            )
-            print("  ✓ State saved to Gist")
-        except Exception as e:
-            print(f"  ⚠ Could not save Gist state: {e}")
-        return
-
-    # Local file fallback
-    with open(config.SEEN_TRADES_FILE, "w") as f:
-        json.dump(sorted(seen), f, indent=2)
+    """Persist seen trade keys, pruning ones that can no longer match."""
+    pruned = _prune_seen(seen)
+    dropped = len(seen) - len(pruned)
+    if dropped:
+        print(f"  ✓ Pruned {dropped} expired seen-key(s) (>{config.SEEN_RETENTION_DAYS}d old)")
+    state_write(config.SEEN_TRADES_FILE, sorted(pruned))
 
 
 def _trade_key(trade: dict) -> str:
@@ -581,10 +832,13 @@ def analyze(trades: list[dict]) -> list[Alert]:
     # Mark all new trades as seen
     mark_seen(new_trades, seen)
 
-    # Combine and sort: cluster > winrate > watchlist
-    tier_order = {"cluster": 0, "winrate": 1, "watchlist": 2}
+    # Combine and rank by conviction score rather than tier — a large, fresh,
+    # multi-member cluster should outrank a token watchlist buy regardless of tier.
+    print("  Scoring alert conviction...")
     all_alerts = cluster_alerts + winrate_alerts + watchlist_alerts
-    all_alerts.sort(key=lambda a: tier_order[a.tier])
+    for alert in all_alerts:
+        enrich_and_score(alert, win_rates)
+    all_alerts.sort(key=lambda a: a.score, reverse=True)
 
     return all_alerts
 

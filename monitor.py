@@ -17,10 +17,11 @@ import argparse
 from datetime import datetime, timedelta
 
 import config
+import history
 from fetcher            import fetch_all
 from openinsider_fetcher import fetch_all as fetch_insider
-from analyzer           import analyze, analyze_cross_cluster, compute_win_rates, filter_new_trades
-from notifier           import send_alerts, send_summary
+from analyzer           import analyze, analyze_cross_cluster, compute_win_rates, enrich_and_score
+from notifier           import send_digest, send_summary
 from committees         import load_all as load_committees
 
 
@@ -84,14 +85,21 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     print("\nDetecting cross-cluster alerts...")
     cross_alerts = analyze_cross_cluster(recent, insider_trades)
 
-    all_alerts = alerts + cross_alerts
-
-    # Win rates (for notifier formatting)
+    # Win rates feed the conviction score, so they must be computed before ranking.
     win_rates = compute_win_rates(all_trades)
 
-    # Send alerts
-    print("\nSending alerts...")
-    send_alerts(all_alerts, win_rates)
+    # analyze() already scored its own alerts; score the cross-cluster ones, then
+    # rank the merged list so the digest leads with the strongest signal.
+    for alert in cross_alerts:
+        enrich_and_score(alert, win_rates)
+    all_alerts = sorted(alerts + cross_alerts, key=lambda a: a.score, reverse=True)
+
+    # Send one ranked digest
+    print("\nSending digest...")
+    send_digest(all_alerts)
+
+    # Record what fired so its forward performance can be measured later
+    history.record_alerts(all_alerts)
 
     _banner(f"Poll complete — {len(all_alerts)} alert(s) — {_now()}")
     return all_alerts, all_trades, win_rates
@@ -165,7 +173,8 @@ def main() -> None:
 Examples:
   python monitor.py               Run forever, polling every 4 hours
   python monitor.py --once        Single poll, print alerts, exit
-  python monitor.py --summary     Send daily digest email, exit
+  python monitor.py --summary     Send weekly digest email, exit
+  python monitor.py --performance Score past alerts against SPY, print, exit
   python monitor.py --reset-state Clear the seen-trades memory, exit
         """,
     )
@@ -184,7 +193,19 @@ Examples:
         action="store_true",
         help="Clear seen_trades.json (Gist or local file) and exit — next run re-alerts all recent trades",
     )
+    parser.add_argument(
+        "--performance",
+        action="store_true",
+        help="Score past alerts against SPY and print the performance summary, then exit",
+    )
     args = parser.parse_args()
+
+    if args.performance:
+        _banner("Alert performance")
+        history.score_history()
+        print()
+        print(history.format_summary(history.performance_summary()))
+        return
 
     if args.reset_state:
         from analyzer import _save_seen, _gist_enabled
@@ -198,7 +219,11 @@ Examples:
     if args.summary:
         _banner("Sending daily digest")
         alerts, trades, _ = poll(wide=True)
-        send_summary(alerts, trades)
+        # Score any alerts whose forward window has now elapsed, so the weekly
+        # email can report whether past signals actually beat SPY.
+        history.score_history()
+        performance = history.format_summary(history.performance_summary())
+        send_summary(alerts, trades, performance)
         print("\n✓ Digest sent.")
 
     elif args.once:
@@ -207,9 +232,9 @@ Examples:
         if not alerts:
             print("\n  No new alerts this cycle.")
         else:
-            print(f"\n  {len(alerts)} alert(s):")
-            for a in alerts:
-                print(f"\n  {a.message}")
+            print(f"\n  {len(alerts)} alert(s), ranked by conviction:")
+            for i, a in enumerate(alerts, 1):
+                print(f"\n  #{i} [{a.score:.0f}/100] {a.message}")
 
     else:
         run_forever()

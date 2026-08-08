@@ -3,6 +3,8 @@
 
 # ── Runtime state ─────────────────────────────────────────────────────────────
 seen_trades.json
+alert_history.json
+digest_preview.html
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
