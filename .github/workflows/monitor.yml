@@ -58,3 +58,12 @@ jobs:
             echo "It is Mon-Sat in California — running alert monitor"
             python monitor.py --once
           fi
+
+          # Monthly review runs in addition to the daily alerts, not instead of
+          # them. It re-reads the logs the daily runs already wrote — no fetching
+          # — so it adds seconds, not minutes.
+          DOM_PST=$(TZ="America/Los_Angeles" date +%d)
+          if [ "$DOM_PST" = "01" ]; then
+            echo "First of the month in California — sending monthly review"
+            python monitor.py --monthly
+          fi

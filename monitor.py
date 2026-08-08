@@ -18,10 +18,11 @@ from datetime import datetime, timedelta
 
 import config
 import history
+import review
 from fetcher            import fetch_all
 from openinsider_fetcher import fetch_all as fetch_insider, InsiderFetchError
 from analyzer           import analyze, analyze_cross_cluster, compute_win_rates, enrich_and_score
-from notifier           import send_digest, send_summary
+from notifier           import send_digest, send_summary, send_monthly_review
 from committees         import load_all as load_committees
 
 
@@ -190,6 +191,7 @@ Examples:
   python monitor.py               Run forever, polling every 4 hours
   python monitor.py --once        Single poll, print alerts, exit
   python monitor.py --summary     Send weekly digest email, exit
+  python monitor.py --monthly     Email the monthly "is this working?" review, exit
   python monitor.py --performance Score past alerts against SPY, print, exit
   python monitor.py --reset-state Clear the seen-trades memory, exit
         """,
@@ -214,13 +216,32 @@ Examples:
         action="store_true",
         help="Score past alerts against SPY and print the performance summary, then exit",
     )
+    parser.add_argument(
+        "--monthly",
+        action="store_true",
+        help="Email the monthly review: is the monitor actually working? Then exit",
+    )
     args = parser.parse_args()
 
     if args.performance:
         _banner("Alert performance")
         history.score_all()
         print()
+        print(review.format_findings(review.build_recommendations()))
+        print()
         print(history.format_summary(history.performance_summary()))
+        return
+
+    if args.monthly:
+        # No fetch — this reads the logs the daily runs already wrote, so it is
+        # cheap enough to run straight after the normal poll.
+        _banner("Monthly review")
+        history.score_all()
+        findings = review.build_recommendations()
+        performance = history.format_summary(history.performance_summary())
+        print(review.format_findings(findings))
+        send_monthly_review(findings, performance)
+        print("\n✓ Monthly review sent.")
         return
 
     if args.reset_state:

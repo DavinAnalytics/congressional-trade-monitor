@@ -299,12 +299,7 @@ def generate_alert_context(alert: Alert, conflicts: list[str] | None = None) -> 
 
 # ── Alert cards ───────────────────────────────────────────────────────────────
 
-TIER_LABELS = {
-    "cross_cluster": "CROSS-SIGNAL",
-    "cluster":       "CLUSTER",
-    "winrate":       "WIN-RATE",
-    "watchlist":     "WATCHLIST",
-}
+TIER_LABELS = config.TIER_LABELS
 
 # (foreground, background) per tier — shared by the digest cards and the summary.
 TIER_COLORS = {
@@ -591,6 +586,98 @@ def send_digest(alerts: list[Alert], warnings: list[str] | None = None) -> None:
     html = _base_html(
         title  = f"{len(ranked)} Signal{'s' if len(ranked) != 1 else ''} — top: {top.ticker}",
         accent = "#1e3a5f",
+        body   = body,
+    )
+    _send_email(subject, text, html)
+
+
+def send_monthly_review(findings: list, performance: str) -> None:
+    """
+    Send the monthly review — the only email whose question is "is this whole
+    thing working", kept separate from the daily digest on purpose.
+
+    Bundled into the weekly digest this section got skimmed: it sits at the
+    bottom, it barely moves week to week, and it competes with signals you might
+    act on today. Alone, once a month, it arrives at roughly the rate the data
+    actually changes and asks one question.
+    """
+    from review import SEVERITY_MARK
+
+    now = datetime.now().strftime("%B %Y")
+    headline = findings[0].headline if findings else "No findings yet"
+    actions  = [f for f in findings if f.action]
+
+    subject = f"📈 Monthly Review — {headline}"
+
+    # ── Plain text ──
+    text_lines = [
+        "CONGRESSIONAL TRADE MONITOR — Monthly Review",
+        now,
+        "=" * 60,
+        "",
+        "Is the monitor actually giving you an edge?",
+        "",
+    ]
+    for f in findings:
+        text_lines.append(f"{SEVERITY_MARK.get(f.severity, '·')}  {f.headline}")
+        text_lines.append(f"    {f.detail}")
+        if f.action:
+            text_lines.append(f'    -> To act on this, send me: "{f.action}"')
+        text_lines.append("")
+
+    text_lines += ["", "─" * 60, "Full numbers", "", performance]
+    text = "\n".join(text_lines)
+
+    # ── HTML ──
+    colors = {
+        "good":    ("#166534", "#f0fdf4", "#86efac"),
+        "watch":   ("#9a3412", "#fff7ed", "#fdba74"),
+        "action":  ("#991b1b", "#fef2f2", "#fca5a5"),
+        "pending": ("#374151", "#f9fafb", "#d1d5db"),
+    }
+    cards = ""
+    for f in findings:
+        fg, bg, border = colors.get(f.severity, colors["pending"])
+        action_html = ""
+        if f.action:
+            action_html = f"""
+        <div style="margin:10px 0 0;padding:10px 12px;background:#fff;border-radius:5px;
+                    border:1px dashed {border};">
+          <p style="margin:0 0 4px;font-size:11px;color:#6b7280;text-transform:uppercase;
+                    letter-spacing:.05em;">Copy this to make the change</p>
+          <code style="font-size:12px;color:#111;font-family:ui-monospace,Menlo,monospace;
+                       word-break:break-word;">{escape(f.action)}</code>
+        </div>"""
+        cards += f"""
+      <div style="margin:0 0 14px;padding:14px 16px;background:{bg};border-radius:6px;
+                  border-left:4px solid {border};">
+        <p style="margin:0 0 6px;font-size:15px;font-weight:600;color:{fg};">
+          {SEVERITY_MARK.get(f.severity, '')} {escape(f.headline)}
+        </p>
+        <p style="margin:0;font-size:13px;color:#374151;line-height:1.6;">{escape(f.detail)}</p>
+        {action_html}
+      </div>"""
+
+    body = f"""
+      <p style="font-size:15px;color:#111;margin:0 0 6px;">
+        <strong>Is the monitor actually giving you an edge?</strong>
+      </p>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 20px;">
+        Measured from the day each alert reached you — not from the politician's
+        trade date — against congressional trades that never triggered an alert.
+      </p>
+      {cards}
+      <h2 style="font-size:14px;font-weight:600;color:#111;margin:26px 0 10px;">Full numbers</h2>
+      <pre style="margin:0;padding:14px 16px;background:#f9fafb;border-radius:6px;
+                  border-left:4px solid #6b7280;font-size:12px;line-height:1.5;
+                  color:#374151;overflow-x:auto;white-space:pre;">{escape(performance)}</pre>
+      <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;">
+        {len(actions)} finding(s) with a suggested change.
+      </p>"""
+
+    html = _base_html(
+        title  = f"Monthly Review — {now}",
+        accent = "#334155",
         body   = body,
     )
     _send_email(subject, text, html)

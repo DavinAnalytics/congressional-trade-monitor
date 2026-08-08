@@ -76,8 +76,11 @@ python monitor.py --once
 # Send the weekly digest email
 python monitor.py --summary
 
-# Score past alerts against SPY and print the performance summary
+# Score past alerts against SPY, print findings and the performance summary
 python monitor.py --performance
+
+# Email the monthly "is the monitor actually working?" review
+python monitor.py --monthly
 
 # Run forever (polls every 4 hours)
 python monitor.py
@@ -145,6 +148,7 @@ congressional-trade-monitor/
 ├── openinsider_fetcher.py # OpenInsider CEO/CFO open-market buy scraper (value + market-cap filtered)
 ├── analyzer.py          # Cluster + cross-signal detection, conviction scoring, win-rate leaderboard
 ├── history.py           # Fired-alert log + forward performance vs SPY
+├── review.py            # Turns performance data into plain-English findings + actions
 ├── committees.py        # Committee assignments + conflict detection (official gov sources)
 ├── notifier.py          # Ranked digest formatting and sending
 ├── monitor.py           # Main polling loop
@@ -169,6 +173,7 @@ The monitor runs automatically on GitHub's servers, allowing it to run without t
 | Day | Schedule | What it does |
 |-----|----------|--------------|
 | Monday – Saturday | 6:00 AM PST | Fetches both chambers, detects signals, sends one ranked digest of new alerts |
+| 1st of month | 6:00 AM PST | **In addition** to that day's alerts, sends the monthly review (see below). Reads the existing logs — no fetching — so it costs seconds |
 | Sunday | 6:00 AM PST | Sends a weekly digest: sector accumulation vs distribution table, top signals of the week, alert performance vs SPY, and Gemini-grounded legislative intelligence |
 
 Both are handled by a single `monitor.yml` workflow. The script checks the day of week and runs `--once` or `--summary` accordingly.
@@ -359,6 +364,22 @@ Alert performance vs SPY over 60 days
 **Is it real, or luck?** An average edge cannot on its own be told apart from chance — with a handful of alerts and normal market noise, +2% arises routinely. `bootstrap()` resamples the edge values with replacement `BOOTSTRAP_ITERATIONS` (5000) times, producing the spread of averages the same data could plausibly have given. If that interval clears zero the effect is real; if it straddles zero there is no evidence either way, however good the headline looks. `bootstrap_difference()` does the same for *alerted minus un-alerted* — the sharpest question the data can answer, and the actual verdict on the detectors. Both are seeded, so the interval does not jitter between runs, and both return nothing below `BOOTSTRAP_MIN_SAMPLES` (5) rather than pretending to a result.
 
 **Does it hold across horizons?** Every alert is already scored at 30/60/90 days. A genuine signal points the same way at all three; an effect that appears at exactly one horizon and vanishes at the others is almost always the window landing on a lucky stretch. `horizon_view()` prints all three and flags a sign flip, which also guards against quoting whichever column flatters the result.
+
+### Monthly review
+
+The weekly digest carries a brief performance section; the **monthly review** (`--monthly`, sent on the 1st) is a separate email whose only question is *should I keep doing this*. `review.py` turns the numbers into plain-English findings, each with a copy-pasteable instruction:
+
+```
+🔴  WATCHLIST alerts are losing money
+    23 matured WATCHLIST alerts averaged -2.9% (95% confidence: -3.4% to -2.4%).
+    The whole confidence range is below zero, so this tier is reliably picking
+    losers rather than merely being unhelpful.
+    → To act on this, send me: "disable the watchlist alert tier (23 alerts, -2.9% edge, ...)"
+```
+
+Separating it is deliberate rather than cosmetic. Bundled into the weekly digest this section gets skimmed — it sits at the bottom, it barely moves week to week, and it competes with signals you might act on today. Alone, once a month, it arrives at roughly the rate the data actually changes, and checking a confidence interval monthly against pre-set rules is far harder to fool yourself with than checking it weekly and eventually catching the week it happens to clear zero.
+
+Nothing recommends a config change below `REC_MIN_SAMPLES` (20) matured alerts — showing a wide interval is honest, advising a change off ten data points is not.
 
 **The control group.** Every run also records a sample of congressional trades that did **not** trigger an alert (`control_trades.json`), scored through the identical code path. This is the null hypothesis made concrete: an alert hit rate on its own is uninterpretable, because if un-alerted trades perform just as well then the detectors contribute nothing and the headline number is merely the base rate of congressional trading. `--performance` leads with the comparison.
 

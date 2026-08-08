@@ -21,6 +21,7 @@ import config
 import history
 import notifier
 import openinsider_fetcher
+import review
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -640,6 +641,85 @@ def test_summary_breaks_out_by_direction(stub_state):
 
     assert summary["by_direction"]["buy"]["hit_rate"] == 1.0
     assert summary["by_direction"]["sell"]["hit_rate"] == 0.0
+
+
+# ── Monthly review recommendations ────────────────────────────────────────────
+
+def _records(n, tier="cluster", edge=0.0, direction="buy", **extra):
+    w = config.WIN_RATE_PRIMARY
+    return [
+        {"id": f"{tier}{direction}{i}", "tier": tier, "ticker": "A", "score": 60.0,
+         "direction": direction, f"edge_{w}": edge, f"act_edge_{w}": edge, **extra}
+        for i in range(n)
+    ]
+
+
+def test_review_says_pending_before_there_is_data(stub_state):
+    stub_state[config.HISTORY_FILE] = []
+    stub_state[config.CONTROL_FILE] = []
+    findings = review.build_recommendations()
+    assert findings[0].severity == "pending"
+    assert not findings[0].action
+
+
+def test_review_confirms_a_working_monitor(stub_state):
+    stub_state[config.HISTORY_FILE] = _records(25, edge=6.0)
+    stub_state[config.CONTROL_FILE] = _records(25, tier="control", edge=0.1)
+    overall = review.build_recommendations()[0]
+    assert overall.severity == "good"
+    assert "beating the baseline" in overall.headline
+
+
+def test_review_flags_a_monitor_that_underperforms_its_baseline(stub_state):
+    stub_state[config.HISTORY_FILE] = _records(25, edge=-4.0)
+    stub_state[config.CONTROL_FILE] = _records(25, tier="control", edge=2.0)
+    overall = review.build_recommendations()[0]
+    assert overall.severity == "action"
+    assert overall.action
+
+
+def test_review_recommends_disabling_a_losing_tier(stub_state):
+    stub_state[config.HISTORY_FILE] = (
+        _records(25, tier="watchlist", edge=-3.0) + _records(25, tier="cluster", edge=4.0)
+    )
+    stub_state[config.CONTROL_FILE] = _records(25, tier="control", edge=0.0)
+    findings = review.build_recommendations()
+
+    disable = [f for f in findings if "disable the watchlist alert tier" in f.action]
+    assert disable, "expected a copy-pasteable disable action for the losing tier"
+    assert disable[0].severity == "action"
+
+
+def test_review_recommends_dropping_unhelpful_sells(stub_state):
+    stub_state[config.HISTORY_FILE] = _records(25, direction="sell", edge=-3.0)
+    stub_state[config.CONTROL_FILE] = _records(25, tier="control", edge=0.0)
+    findings = review.build_recommendations()
+    assert any("stop alerting on sell clusters" in f.action for f in findings)
+
+
+def test_review_recommends_reverting_the_director_widening(stub_state):
+    stub_state[config.HISTORY_FILE] = (
+        _records(25, tier="cross_cluster", edge=8.0, has_top_insider=True)
+        + _records(25, tier="cross_cluster", edge=-2.0, has_top_insider=False)
+    )
+    stub_state[config.CONTROL_FILE] = _records(25, tier="control", edge=0.0)
+    findings = review.build_recommendations()
+    assert any("narrow the insider screener back to CEO/CFO" in f.action for f in findings)
+
+
+def test_review_stays_silent_below_the_recommendation_threshold(stub_state):
+    """Wide intervals are honest; advising a config change off 6 points is not."""
+    stub_state[config.HISTORY_FILE] = _records(6, tier="watchlist", edge=-3.0)
+    stub_state[config.CONTROL_FILE] = _records(6, tier="control", edge=0.0)
+    findings = review.build_recommendations()
+    assert not any("disable" in f.action for f in findings)
+
+
+def test_findings_render_with_copy_paste_instructions(stub_state):
+    stub_state[config.HISTORY_FILE] = _records(25, tier="watchlist", edge=-3.0)
+    stub_state[config.CONTROL_FILE] = _records(25, tier="control", edge=0.0)
+    out = review.format_findings(review.build_recommendations())
+    assert "To act on this, send me:" in out
 
 
 # ── Significance & horizons ───────────────────────────────────────────────────

@@ -80,6 +80,23 @@ BOOTSTRAP_ITERATIONS = 5_000
 # Below this many scored alerts, a bootstrap is theatre — report "too few" instead.
 BOOTSTRAP_MIN_SAMPLES = 5
 
+# Minimum matured alerts before the monthly review will recommend changing
+# anything. Deliberately higher than the bootstrap floor: showing a wide interval
+# is honest, but advising a config change off ten data points is not.
+REC_MIN_SAMPLES = 20
+
+# ── Display ───────────────────────────────────────────────────────────────────
+
+# Shared by the digest cards and the monthly review, so a tier is named the same
+# everywhere.
+TIER_LABELS = {
+    "cross_cluster": "CROSS-SIGNAL",
+    "cluster":       "CLUSTER",
+    "winrate":       "WIN-RATE",
+    "watchlist":     "WATCHLIST",
+    "control":       "CONTROL",
+}
+
 # ── State Retention ───────────────────────────────────────────────────────────
 # Both state files live in a Gist, and the Gist API silently truncates file
 # contents past ~1MB — which would corrupt state rather than fail loudly. Both
