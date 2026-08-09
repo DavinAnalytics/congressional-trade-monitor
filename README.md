@@ -1,9 +1,9 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
-**Status:** ✅ Complete - all modules built and tested  
+**Status:** ✅ Complete — all modules built, 96 unit tests passing  
 **Live dashboard:** https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
-**Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends email alerts on schedule, and provides a visual dashboard for exploratory analysis.
+**Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends one ranked email digest on schedule, tracks whether its own alerts actually beat the market, and provides a visual dashboard for exploratory analysis.
 
 ---
 
@@ -197,6 +197,16 @@ Both are handled by a single `monitor.yml` workflow. The script checks the day o
 All AI features use Google Search grounding, so Gemini pulls real-time search results rather than relying on training data. Every feature degrades gracefully — if `GEMINI_API_KEY` is not set, the email still sends with all deterministic content intact and the AI blocks are simply omitted.
 
 The model is overridable with the optional `GEMINI_MODEL` env var (default `gemini-2.5-flash`), so a future model deprecation is a config change rather than a code change. Google Search grounding has a stricter free-tier quota than plain generation; when a grounded call hits a `429` quota error, the call automatically retries **without** grounding so the email still receives AI context (sourced from the model's training data instead of live search).
+
+**Output cleanup.** Raw Gemini responses are not fit to email as-is, and all three failure modes below were seen in live digests. `_clean_ai_text()` handles them before anything is rendered:
+
+| Problem | Seen as | Fix |
+|---------|---------|-----|
+| Grounding citation markers leak into the prose | `TSM raised its outlook. [cite: 1, 2, 3]` | Stripped, including the unterminated `[cite: 1, 2,` a truncated response leaves behind |
+| The model repeats its whole answer | The same paragraph twice in one block | Repeated sentences dropped, first occurrence kept |
+| The token ceiling cuts it off mid-thought | `...ahead of schedule due to orders from major AI chip` | Trimmed back to the last complete sentence |
+
+The prompts also ask explicitly for no repetition and no citation markers. Output ceilings are `AI_ALERT_MAX_TOKENS` (450) and `AI_WEEKLY_MAX_TOKENS` (600) — 220 was too tight once the prompt carried the full enriched context. Raising them costs nothing, because the free tier is rationed by *requests per day*, not tokens per request, and one run makes at most `DIGEST_AI_TOP_N + 1` calls.
 
 All AI-generated text is passed through `html.escape()` before being inserted into HTML email bodies, so any HTML characters in Gemini's response are rendered as literal text rather than markup.
 
@@ -406,27 +416,59 @@ The tier breakdown says which signal types earn their place. The score breakdown
 
 **Official government sources for committee data** rather than third-party APIs. Both the House Clerk XML and Senate.gov HTML are free, permanent, and require no authentication.
 
+**Measure the monitor, not the politicians.** Every alert is scored twice — from the trade date and from the day the alert reached you — and against a control group of trades that never alerted. It would have been easier to report "X% of our alerts beat SPY", and that number is close to meaningless: it cannot distinguish the detectors working from the base rate of congressional trading, and it credits returns the disclosure lag made uncapturable. The harder measurement is the only one that answers whether the tool is worth running.
+
+**Decision rules written before the data arrived.** The thresholds in `review.py` were set against an empty log. Choosing them after seeing which tiers performed would have guaranteed they looked good.
+
+**Fail loudly on a dead feed.** An unreachable insider feed raises rather than returning an empty list, because "the feed is down" and "no insiders bought anything" mean opposite things and used to be indistinguishable — silently disabling the strongest signal in the system.
+
 **Rate limiting by design**: polls every 4 hours (6 requests/day per source), 200 PDF cap per run, `seen_trades.json` prevents re-downloading already-processed filings.
 
 ---
 
-## Tested Output (June 6, 2026)
+## Verified Output (August 8, 2026)
+
+From a live GitHub Actions run plus local measurement on the same day:
 
 ```
-Senate: 171 trades (last 180 days, 50 filings parsed)
-House:  129 trades (last 180 days, 200 PDFs parsed)
-Total:  300 trades · Runtime: ~2.5 minutes
+Senate:  473 trades (last 180 days, 50 filings parsed)
+House:  1233 trades (last 180 days, 200 PDFs parsed)
+Total:  1706 trades · 150 in the 45-day alert window · Runtime: ~8.5 minutes
+Insider: 121 buys across 67 tickers (299 filings read over 3 screener pages)
 
-Win-Rate Leaderboard:
-  Markwayne Mullin     77%  (24/31 beat SPY over 60d) ⭐
-  John Boozman         65%  (26/40 beat SPY over 60d) ⭐
-
-Alert fired:
-  🟢 Whitehouse — NVDA SALE_PARTIAL $100,001-$250,000 [Self, Spouse]
-     ⚠ Commerce, Science, and Transportation (oversees Semiconductors — NVDA)
-     ⚠ International Trade, Customs, and Global Competitiveness (oversees Semiconductors — NVDA)
-     ⚠ Emerging Threats and Capabilities (oversees Semiconductors — NVDA)
+Digest — 8 signals, ranked by conviction:
+  #1  [CROSS-SIGNAL] TSM   67/100   1 congressional buy + 3 insider buys, 24d apart
+        Congress ~$8K · Insider ~$73K · lag 0d (fresh) · -3.2% since trade (SPY +2.4%) ✗
+  #2  [CLUSTER]      NVDA  62/100   3 members selling, 2026-06-30 → 2026-07-21
+        ~$73K · lag 1d (fresh) · +11.9% since trade (SPY +3.5%) ✗
+        ⚠ Whitehouse: Commerce, Science, and Transportation (oversees Semiconductors — NVDA)
+  #3  [CLUSTER]      MKL   55/100   2 members selling
+  ... down to 52/100
 ```
+
+The ✗ marks are the direction check: NVDA rose 8.4% against SPY *after* three members
+sold it, so that signal was wrong so far — the same percentage would be a ✓ on a buy.
+
+## Testing
+
+```bash
+./.venv/bin/pytest tests/
+```
+
+96 tests, no network — yfinance and the Gist are monkeypatched out, so the suite runs offline and deterministically. Coverage is deliberately concentrated on the logic that is easy to get quietly wrong rather than on plumbing:
+
+| Area | What it pins |
+|------|--------------|
+| Amount parsing | Disclosure brackets, open-ended `$50,000,000 +`, unparseable input |
+| Disclosure lag | Both chambers, missing dates, and that a disclosure predating the trade reads as 0 rather than negative |
+| Conviction scoring | Ordering (size, breadth, freshness), that unknown lag scores between fresh and stale, and that the score sizes on congressional dollars only |
+| Cross-signals | Pairwise proximity — including the regression that a stale outlier must not veto a tight pairing |
+| Direction | That a sell alert's edge is inverted, the bug that made sell signals record backwards |
+| Two baselines | That the actionable entry excludes the return eaten by disclosure lag |
+| Control group | Exclusion of alerted trades, sampling cap, per-day stability |
+| Significance | That obvious noise reads as "no evidence" and a clear effect reads as real |
+| State retention | Pruning by a key's *newest* date, and that undated keys are never dropped |
+| Feed resilience | Retry, pagination past the 100-row cap, and that an outage is not an empty result |
 
 ---
 
@@ -450,6 +492,24 @@ WATCHLIST           = [        # members whose any trade triggers an alert
 ]
 SECTOR_TICKERS      = {...}    # sector → ticker mappings for conflict detection
 COMMITTEE_SECTORS   = {...}    # committee keywords → sector mappings
+
+# ── Conviction scoring ──
+SCORE_WEIGHTS       = {...}    # max points per component (see Alert Tiers above)
+SCORE_DOLLAR_CAP    = 1_000_000  # congressional dollars earning full size points
+SCORE_PARTICIPANT_CAP = 5      # participants earning full breadth points
+DIGEST_AI_TOP_N     = 3        # alerts per digest that get a Gemini blurb
+AI_ALERT_MAX_TOKENS = 450      # output ceiling per alert blurb
+AI_WEEKLY_MAX_TOKENS = 600     # output ceiling for the weekly intelligence
+
+# ── Performance tracking ──
+HISTORY_FILE        = "alert_history.json"   # fired alerts, in the same Gist
+CONTROL_FILE        = "control_trades.json"  # un-alerted comparison group
+CONTROL_SAMPLE_PER_RUN = 20    # control trades sampled each run
+SEEN_RETENTION_DAYS = 120      # prune seen-keys that can no longer match
+HISTORY_MAX_RECORDS = 3000     # cap both logs under the Gist truncation limit
+BOOTSTRAP_ITERATIONS = 5_000   # resamples for the confidence interval
+BOOTSTRAP_MIN_SAMPLES = 5      # below this, report "too few" instead of a number
+REC_MIN_SAMPLES     = 20       # below this, the monthly review advises nothing
 ```
 
 **Watchlist rationale:** Pelosi (Paul's options trades historically correlated with legislation), Gottheimer (semiconductor trades near CHIPS Act votes, Financial Services committee), Crenshaw (defense/energy trades, Armed Services committee), Tuberville (defense/energy trades, Senate Armed Services, single-handedly held up military appointments), Warner (tech/finance background, Senate Intelligence + Finance committees), Mast (active defense sector trades, Armed Services committee).
