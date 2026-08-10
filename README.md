@@ -58,39 +58,47 @@ activity, **red** for net sell activity — independent of tier.
 ## Quickstart
 
 ```bash
-pip install -r requirements.txt
+# Create the project's virtual environment (once)
+python3 -m venv .venv
+./.venv/bin/python -m pip install -r requirements.txt
 
 # Set up credentials
 cp .env.example .env
 # Edit .env with your Gmail sender, app password, and recipient
 
 # Launch the visual dashboard (no credentials required)
-python -m streamlit run dashboard.py
+./.venv/bin/python -m streamlit run dashboard.py
 
 # Preview filtered OpenInsider insider buys
-python openinsider_fetcher.py
+./.venv/bin/python openinsider_fetcher.py
 
 # Test one full cycle (fetch → analyze → ranked digest email)
-python monitor.py --once
+./.venv/bin/python monitor.py --once
 
 # Send the weekly digest email
-python monitor.py --summary
+./.venv/bin/python monitor.py --summary
 
 # Score past alerts against SPY, print findings and the performance summary
-python monitor.py --performance
+./.venv/bin/python monitor.py --performance
 
 # Email the monthly "is the monitor actually working?" review
-python monitor.py --monthly
+./.venv/bin/python monitor.py --monthly
 
 # Run forever (polls every 4 hours)
-python monitor.py
+./.venv/bin/python monitor.py
 
 # Preview the digest layout as HTML without sending or calling Gemini
-python notifier.py
+./.venv/bin/python notifier.py
 
 # Run the test suite
 ./.venv/bin/pytest tests/
 ```
+
+> All commands use `./.venv/bin/python` explicitly, so they run against the
+> project's own environment regardless of what `python3` points at on your
+> PATH. If you prefer a shorter prompt, activate the venv first with
+> `source .venv/bin/activate` and then plain `python` refers to the same
+> interpreter.
 
 ---
 
@@ -99,10 +107,10 @@ python notifier.py
 `dashboard.py` is a Streamlit app that provides a read-only visual interface over the same data sources the monitor uses. It **never calls `analyzer.analyze()`** — only the individual detectors — so it cannot mutate `seen_trades.json` or trigger duplicate email alerts.
 
 ```bash
-python -m streamlit run dashboard.py
+./.venv/bin/python -m streamlit run dashboard.py
 ```
 
-> Use `python -m streamlit` (not `streamlit`) to ensure the same Python environment that has all dependencies installed.
+> Use `./.venv/bin/python -m streamlit` (not a bare `streamlit`) to ensure the same Python environment that has all dependencies installed.
 
 ### Tabs
 
@@ -156,7 +164,7 @@ congressional-trade-monitor/
 ├── .env                 # Your credentials — gitignored, never committed
 ├── .env.example         # Credential template — committed, no real values
 ├── .gitignore           # Blocks .env and seen_trades.json from git
-├── requirements.txt     # pip install -r requirements.txt
+├── requirements.txt     # ./.venv/bin/python -m pip install -r requirements.txt
 ├── seen_trades.json     # Auto-created state file — gitignored
 ├── .github/
 │   └── workflows/
@@ -536,7 +544,7 @@ Credentials are stored in `.env`, NOT in source code.
    ```
    For GitHub Actions, also add `GEMINI_API_KEY` as a repository secret (Settings → Secrets and variables → Actions).
 
-Test with: `python notifier.py`
+Test with: `./.venv/bin/python notifier.py`
 
 **Why this approach:** `config.py` is safe to commit publicly. `.env` is gitignored and stays on your machine only. Anyone cloning the repo copies `.env.example` to `.env` and adds their own credentials.
 

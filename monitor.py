@@ -6,9 +6,9 @@ Main polling loop. Runs forever, waking every POLL_INTERVAL_SECONDS to:
   3. Send email alerts for anything new (notifier.py)
 
 Usage:
-  python monitor.py            # run forever
-  python monitor.py --once     # single poll then exit (good for cron/testing)
-  python monitor.py --summary  # send daily digest then exit
+  ./.venv/bin/python monitor.py            # run forever
+  ./.venv/bin/python monitor.py --once     # single poll then exit (good for cron/testing)
+  ./.venv/bin/python monitor.py --summary  # send daily digest then exit
 """
 
 import sys
@@ -188,12 +188,12 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python monitor.py               Run forever, polling every 4 hours
-  python monitor.py --once        Single poll, print alerts, exit
-  python monitor.py --summary     Send weekly digest email, exit
-  python monitor.py --monthly     Email the monthly "is this working?" review, exit
-  python monitor.py --performance Score past alerts against SPY, print, exit
-  python monitor.py --reset-state Clear the seen-trades memory, exit
+  ./.venv/bin/python monitor.py               Run forever, polling every 4 hours
+  ./.venv/bin/python monitor.py --once        Single poll, print alerts, exit
+  ./.venv/bin/python monitor.py --summary     Send weekly digest email, exit
+  ./.venv/bin/python monitor.py --monthly     Email the monthly "is this working?" review, exit
+  ./.venv/bin/python monitor.py --performance Score past alerts against SPY, print, exit
+  ./.venv/bin/python monitor.py --reset-state Clear the seen-trades memory, exit
         """,
     )
     parser.add_argument(
