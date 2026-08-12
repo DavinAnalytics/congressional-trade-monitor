@@ -39,55 +39,41 @@ _CACHE_LOADED = {"house": False, "senate": False}
 
 # ── House ─────────────────────────────────────────────────────────────────────
 
-def _fetch_house_committee_names() -> dict[str, str]:
-    """
-    Fetch committee code → name mapping from House Clerk.
-    Returns dict like {"AG00": "Agriculture", "II00": "Natural Resources"}
-    """
-    # House committee codes and names are embedded in the MemberData XML
-    # We also resolve via the committee page URL pattern
-    # Build a static map of the standard House committee codes
-    # (these are stable across sessions — codes don't change when names do)
-    return {
-        "AG00": "Agriculture",
-        "AP00": "Appropriations",
-        "AS00": "Armed Services",
-        "BO00": "Budget",
-        "ED00": "Education and Workforce",
-        "EC00": "Energy and Commerce",
-        "ET00": "Ethics",
-        "FA00": "Financial Services",
-        "FO00": "Foreign Affairs",
-        "GO00": "Oversight and Accountability",
-        "HA00": "House Administration",
-        "HM00": "Homeland Security",
-        "II00": "Natural Resources",
-        "JU00": "Judiciary",
-        "PW00": "Transportation and Infrastructure",
-        "RU00": "Rules",
-        "SB00": "Small Business",
-        "SY00": "Science, Space, and Technology",
-        "SO00": "Select Intelligence",
-        "VR00": "Veterans' Affairs",
-        "WM00": "Ways and Means",
-        "BU00": "Budget",
-        "IF00": "Energy and Commerce",  # alternate code
-        "BA00": "Financial Services",
-        "IG00": "Permanent Select Committee on Intelligence",
-        "CH00": "Select Committee on the Chinese Communist Party",
-        "NR00": "Natural Resources",
-        "OG00": "Oversight and Accountability",
-    }
+_COMMITTEE_PREFIX_RE = re.compile(r"^Committee on (?:the )?", re.I)
 
 
-def _fetch_house_subcommittee_names() -> dict[str, str]:
+def _clean_committee_name(raw: str) -> str:
+    """"Committee on the Budget" -> "Budget". Longer forms are left alone:
+    "Permanent Select Committee on Intelligence" reads better whole."""
+    return _COMMITTEE_PREFIX_RE.sub("", " ".join(raw.split()))
+
+
+def _parse_house_committee_names(root: ET.Element) -> tuple[dict, dict]:
     """
-    Returns a mapping of subcommittee codes to readable names.
-    Subcommittee codes are committee code + 2-digit suffix e.g. AG15.
-    We fetch these from the House Clerk committee pages on demand.
+    Code → readable name for committees and subcommittees.
+
+    MemberData.xml carries a <committees> block defining every code it later
+    references, so the names come from the same document as the assignments and
+    cannot drift out of sync with them.
     """
-    # For now return empty — subcommittee names are resolved lazily
-    return {}
+    committees: dict[str, str] = {}
+    subcommittees: dict[str, str] = {}
+
+    for comm in root.findall(".//committees/committee"):
+        code = comm.get("comcode", "")
+        name = _clean_committee_name(comm.findtext("committee-fullname", ""))
+        if code and name:
+            committees[code] = name
+
+        for sub in comm.findall("subcommittee"):
+            sub_code = sub.get("subcomcode", "")
+            sub_name = _clean_committee_name(
+                sub.findtext("subcommittee-fullname", "")
+            )
+            if sub_code and sub_name:
+                subcommittees[sub_code] = sub_name
+
+    return committees, subcommittees
 
 
 def _load_house_committees() -> None:
@@ -109,8 +95,8 @@ def _load_house_committees() -> None:
         print(f"  ⚠ Could not fetch House committee data: {e}")
         return
 
-    committee_names = _fetch_house_committee_names()
     root = ET.fromstring(resp.content)
+    committee_names, subcommittee_names = _parse_house_committee_names(root)
 
     for member in root.findall(".//member"):
         # Extract name
@@ -124,18 +110,18 @@ def _load_house_committees() -> None:
         committees   = []
         subcommittees = []
 
+        # Unresolvable codes are skipped rather than shown raw: the names come
+        # from this same document, so a miss means the code is not a committee
+        # we can name, and "SM00" is worse than nothing in an alert email.
         for comm in member.findall("committee-assignments/committee"):
-            code = comm.get("comcode", "")
-            name = committee_names.get(code, code)  # fallback to code if unknown
+            name = committee_names.get(comm.get("comcode", ""))
             if name and name not in committees:
                 committees.append(name)
 
         for sub in member.findall("committee-assignments/subcommittee"):
-            code = sub.get("subcomcode", "")
-            # Subcommittee names require separate lookup — store codes for now
-            # We'll resolve to names via the committee conflict mapping
-            if code and code not in subcommittees:
-                subcommittees.append(code)
+            name = subcommittee_names.get(sub.get("subcomcode", ""))
+            if name and name not in subcommittees:
+                subcommittees.append(name)
 
         _COMMITTEE_CACHE[full_name.lower()] = {
             "name":          full_name,
@@ -185,7 +171,7 @@ def _load_senate_committees() -> None:
     # Regex patterns
     name_re  = re.compile(r'^([A-Z][a-záéíóúñ\-\' ]+),\s+([A-Z][a-záéíóúñ\-\' .]+)$')
     party_re = re.compile(r'^\([DRI]-[A-Z]{2}\)$')
-    comm_re  = re.compile(r'^Committee on (.+)$')
+    comm_re  = re.compile(r'^Committee on (?:the )?(.+)$')
     sub_re   = re.compile(r'^Subcommittee on (.+?)(?:\s*\((?:Chairman|Ranking|Vice Chair)\))?$')
     spec_re  = re.compile(r'^(?:Special|Select|Joint|Standing) Committee on (.+)$')
 
@@ -264,6 +250,30 @@ def load_all(force: bool = False) -> None:
         _load_house_committees()
     if force or not _CACHE_LOADED["senate"]:
         _load_senate_committees()
+
+
+# Suffixes that follow a comma without making the name "Last, First".
+_NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v", "md", "m.d."}
+
+
+def display_name(name: str) -> str:
+    """
+    One readable form for a member, whichever chamber they came from.
+
+    The House feed gives "Delaney, April McClain" and the Senate feed gives
+    "John Boozman", so a table listing both shows two conventions side by side.
+    This normalises to "First Last" for display only — dedup keys and history
+    records keep the raw name, so nothing downstream re-fires.
+    """
+    name = " ".join(name.split()).rstrip(",")
+    if "," not in name:
+        return name
+
+    last, _, rest = name.partition(",")
+    rest = rest.strip()
+    if not rest or rest.lower().rstrip(".") in {s.rstrip(".") for s in _NAME_SUFFIXES}:
+        return name  # "A. Mitchell McConnell, Jr." — the comma is a suffix
+    return f"{rest} {last.strip()}"
 
 
 def get_member_committees(name: str) -> dict:

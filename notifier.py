@@ -25,6 +25,7 @@ from datetime import datetime
 
 import config
 from analyzer import Alert, parse_amount_value
+from committees import display_name
 
 
 # ── Email transport ───────────────────────────────────────────────────────────
@@ -92,7 +93,7 @@ def _trade_rows_html(trades: list[dict]) -> str:
         color   = "#16a34a" if t["type"] == "purchase" else "#dc2626"
         rows += f"""
         <tr>
-          <td style="padding:6px 12px;">{t['representative']}{owner}</td>
+          <td style="padding:6px 12px;">{display_name(t['representative'])}{owner}</td>
           <td style="padding:6px 12px;font-weight:bold;">{t['ticker']}</td>
           <td style="padding:6px 12px;"><span style="color:{color};font-weight:600;">{tx_type}</span></td>
           <td style="padding:6px 12px;">{t['transaction_date']}</td>
@@ -112,7 +113,7 @@ def _trade_rows_text(trades: list[dict]) -> str:
         owner    = f" ({t['owner']})" if t.get("owner") else ""
         tx_emoji = "🟢" if t["type"] == "purchase" else "🔴"
         lines.append(
-            f"  {t['representative']}{owner} | {t['ticker']} {tx_emoji} {tx_type} | "
+            f"  {display_name(t['representative'])}{owner} | {t['ticker']} {tx_emoji} {tx_type} | "
             f"{t['transaction_date']} | {_fmt_amount(t['amount'])}"
         )
     return "\n".join(lines)
@@ -271,7 +272,7 @@ def generate_alert_context(alert: Alert, conflicts: list[str] | None = None) -> 
 
     facts = [f"{len(members)} member(s) of Congress are {direction} {alert.ticker}"]
     if members:
-        facts.append("Members: " + ", ".join(members[:5]) + ("..." if len(members) > 5 else ""))
+        facts.append("Members: " + ", ".join(display_name(m) for m in members[:5]) + ("..." if len(members) > 5 else ""))
     if m.get("dollar_total"):
         facts.append(f"Combined disclosed size: {_fmt_dollars(m['dollar_total'])}")
     if m.get("first_date"):
@@ -320,7 +321,8 @@ def _alert_conflicts(alert: Alert) -> list[str]:
 
     lines = []
     for member in alert.meta.get("members", []):
-        lines += [f"{member}: {c}" for c in flag_conflicts(member, alert.ticker)]
+        lines += [f"{display_name(member)}: {c}"
+                  for c in flag_conflicts(member, alert.ticker)]
     return lines
 
 

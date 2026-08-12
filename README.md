@@ -115,7 +115,9 @@ Everything is computed once a day in CI, and congressional disclosures lag up to
 
 Interactivity is client-side, so filtering and sorting are instant: search and sector/type/chamber/window filters over the full trade log, sortable columns everywhere, expandable signal cards, and inline SVG price-vs-SPY charts. The page carries the performance and edge-tracking view the Streamlit app never had.
 
-**One-time setup:** Settings → Pages → Source → **GitHub Actions**. Until that is set the deploy step fails; it is marked `continue-on-error` so a missing Pages config cannot fail the alert run.
+**The page shows every live signal, not just the day's new ones.** `analyze()` suppresses alerts it has already emailed, so the list `monitor.poll()` hands to the exporter is a one-day delta — publishing that directly left the dashboard reading "0 signals" on any quiet day, which is most days. `export.current_signals()` re-runs the four detectors over the same window and marks the ones that fired this morning as `new`. The detectors are pure; only `analyze()` touches the seen-state, so rebuilding the picture here cannot silence the next real run.
+
+**One-time setup:** Settings → Pages → Source → **GitHub Actions**. Until that is set the deploy step fails; it is marked `continue-on-error` so a missing Pages config cannot fail the alert run. Note the published page is public if the repo is — it is derived from public disclosures, but the conviction scores, win-rate leaderboard and alert history are visible to anyone with the URL.
 
 ---
 
@@ -306,7 +308,9 @@ House PTR filings are only available as PDFs. The Clerk search endpoint returns 
 ### Committee conflict detection
 `committees.py` fetches committee assignments for all 535 members from official government XML and HTML sources. On **every** alert tier — cluster, cross-signal, win-rate, and watchlist — each participating member's committees and subcommittees are cross-referenced against sector-to-committee mappings in `config.py`. If a member sits on a committee with oversight authority over the traded ticker's sector, the conflict is flagged on that alert's card in the digest.
 
-**Name format fix:** Trade disclosures return names as `"Last, First Middle"` (e.g. `"Taylor, David J."`) while the committee cache keys names as `"First Last"`. `get_member_committees()` detects the comma-separated format and retries with both `"First Middle Last"` and `"First Last"` (dropping the middle initial), dramatically improving committee coverage.
+**Committee names come from the XML, not a lookup table.** `MemberData.xml` carries a `<committees>` block defining every code it later references, so both committee and subcommittee names are parsed from the same document as the assignments and cannot drift out of sync with them. An earlier hand-written code→name map had `FA00` as Financial Services (it is Foreign Affairs) and `SO00` as Intelligence (it is Ethics), and was missing `SM00`, `ZS00` and `QJ00` entirely — which both showed raw codes in the UI and produced false Financial Services conflict flags for all 54 Foreign Affairs members. Subcommittees now resolve to real names too, so they can actually match the sector keywords in `config.COMMITTEE_SECTORS`; previously they were stored as codes like `FA05` and could never match anything.
+
+**Name format fix:** Trade disclosures return names as `"Last, First Middle"` (e.g. `"Taylor, David J."`) while the committee cache keys names as `"First Last"`. `get_member_committees()` detects the comma-separated format and retries with both `"First Middle Last"` and `"First Last"` (dropping the middle initial), dramatically improving committee coverage. `display_name()` applies the same flip for presentation so the House and Senate feeds do not show two naming conventions side by side; it leaves suffix commas (`"A. Mitchell McConnell, Jr."`) alone. Display only — dedup keys and history records keep the raw name, so normalizing cannot re-fire old alerts.
 
 **Example:** Whitehouse sells NVDA → flagged for sitting on Commerce/Science/Transportation, International Trade subcommittee (chip export policy), and Emerging Threats and Capabilities.
 

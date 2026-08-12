@@ -104,6 +104,20 @@ h1{font-size:26px}
   border:1px dashed var(--line-2);font-family:var(--mono);font-size:12px;
   color:var(--ink-2);white-space:pre-wrap;word-break:break-word;
 }
+/* A pending verdict says the same thing for weeks — collapse it to one line
+   so it stops pushing the tabs below the fold. */
+.finding.fold{padding:11px 16px;align-items:baseline}
+.finding.fold summary{
+  cursor:pointer;list-style:none;font-size:15px;font-family:var(--serif);
+  color:var(--ink);
+}
+.finding.fold summary::-webkit-details-marker{display:none}
+.finding.fold summary::after{
+  content:"  show";font-family:var(--mono);font-size:11px;color:var(--faint);
+  letter-spacing:.04em;
+}
+.finding.fold details[open] summary::after{content:"  hide"}
+.finding.fold p{margin:6px 0 0}
 
 /* ── Tabs ── */
 .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:26px 0 0;overflow-x:auto}
@@ -148,6 +162,11 @@ h1{font-size:26px}
 .chip.winrate{background:var(--warn-soft);color:var(--warn)}
 .chip.watchlist{background:var(--buy-soft);color:var(--buy)}
 .tick{font-family:var(--serif);font-size:19px;font-weight:600}
+/* Marks the signals this morning's run emailed, among all that are still live. */
+.new{
+  font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--accent);border:1px solid var(--accent);border-radius:2px;padding:1px 5px;
+}
 .card-head .spacer{flex:1}
 .score{font-family:var(--mono);font-weight:700;font-size:15px}
 .score small{color:var(--faint);font-weight:400}
@@ -297,6 +316,9 @@ const $ = (s,r=document)=>r.querySelector(s);
 const el = (t,c,h)=>{const n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n;};
 const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const money = v => !v ? "—" : v>=1e6 ? "$"+(v/1e6).toFixed(1)+"M" : v>=1e3 ? "$"+Math.round(v/1e3)+"K" : "$"+Math.round(v);
+/* Congress discloses a bracket, not a figure — every congressional dollar
+   amount on this page is the midpoint of one, and is marked as such. */
+const approx = v => !v ? "—" : "~"+money(v);
 const pct = v => v==null ? "—" : (v>=0?"+":"")+v.toFixed(1)+"%";
 const TYPE = {purchase:"Purchase", sale:"Sale", sale_partial:"Partial sale"};
 
@@ -311,23 +333,30 @@ $("#theme").onclick = () => {
 $("#stamp").textContent = "Built " + DATA.generated_at;
 const C = DATA.counts;
 $("#stats").innerHTML = [
-  [C.alerts, "Signals"], [C.trades, "Trades / "+DATA.window_days+"d"],
+  [C.alerts, C.new ? `Signals · ${C.new} new` : "Signals live"],
+  [C.trades, "Trades / "+DATA.window_days+"d"],
   [C.members, "Members"], [C.insider, "Insider buys"],
 ].map(([n,l])=>`<div class="stat"><b>${n}</b><span>${l}</span></div>`).join("");
 
 /* ── Verdict ── */
 const MARK = {good:"OK", watch:"WATCH", action:"ACTION", pending:"PENDING"};
-$("#findings").innerHTML = DATA.findings.length ? DATA.findings.map(f=>`
-  <div class="finding ${f.severity}">
-    <span class="mark">${MARK[f.severity]||""}</span>
-    <div>
-      <h3>${esc(f.headline)}</h3>
-      <p>${esc(f.detail)}</p>
-      ${f.action?`<code>To act on this, send: "${esc(f.action)}"</code>`:""}
-    </div>
-  </div>`).join("")
-  : `<div class="finding pending"><span class="mark">PENDING</span><div>
-     <h3>No findings yet</h3><p>Alerts need to mature before performance can be judged.</p></div></div>`;
+const finding = f => f.severity === "pending"
+  ? `<div class="finding pending fold">
+       <span class="mark">PENDING</span>
+       <details><summary>${esc(f.headline)}</summary><p>${esc(f.detail)}</p></details>
+     </div>`
+  : `<div class="finding ${f.severity}">
+       <span class="mark">${MARK[f.severity]||""}</span>
+       <div>
+         <h3>${esc(f.headline)}</h3>
+         <p>${esc(f.detail)}</p>
+         ${f.action?`<code>To act on this, send: "${esc(f.action)}"</code>`:""}
+       </div>
+     </div>`;
+$("#findings").innerHTML = DATA.findings.length
+  ? DATA.findings.map(finding).join("")
+  : finding({severity:"pending", headline:"No findings yet",
+      detail:"Alerts need to mature before performance can be judged."});
 
 /* ── Tabs ── */
 const TABS = [
@@ -384,7 +413,7 @@ $("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
   const lag = a.lag_days==null ? "unknown"
     : a.lag_days+"d "+(a.lag_days<=14?"(fresh)":a.lag_days<=30?"(aging)":"(stale)");
   const m = [];
-  if(a.congress_dollars) m.push(["Congress size", money(a.congress_dollars),""]);
+  if(a.congress_dollars) m.push(["Congress size", approx(a.congress_dollars),""]);
   if(a.insider_dollars)  m.push(["Insider size", money(a.insider_dollars),""]);
   m.push(["Disclosure lag", lag, ""]);
   if(a.pct_since!=null) m.push(["Since trade date",
@@ -395,6 +424,7 @@ $("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
       <span class="rank num">#${i+1}</span>
       <span class="chip ${a.tier}">${esc(a.label)}</span>
       <span class="tick">${esc(a.ticker)}</span>
+      ${a.is_new?`<span class="new">new</span>`:""}
       <span class="spacer"></span>
       <span class="meter"><i style="width:${Math.max(2,a.score)}%"></i></span>
       <span class="score">${a.score.toFixed(0)}<small>/100</small></span>
@@ -412,7 +442,7 @@ $("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
           <td>${esc(t.member)}${t.owner?` <span style="color:var(--faint)">(${esc(t.owner)})</span>`:""}</td>
           <td style="color:${t.type==="purchase"?"var(--buy)":"var(--sell)"}">${TYPE[t.type]||esc(t.type)}</td>
           <td class="n">${esc(t.date)}</td><td class="n">${t.lag==null?"—":t.lag+"d"}</td>
-          <td class="n">${money(t.value)}</td>
+          <td class="n">${approx(t.value)}</td>
           <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">Filing</a>`:"—"}</td></tr>`).join("")}</tbody>
       </table></div>
       ${a.insider.length?`<div class="tw" style="margin-top:11px"><table>
@@ -487,7 +517,7 @@ const drawTrades = sortable("#t-trades", [
   <td>${esc(t.member)}${t.owner?` <span style="color:var(--faint)">(${esc(t.owner)})</span>`:""}</td>
   <td class="n"><b>${esc(t.ticker)}</b>${t.asset_type==="option"?` <span style="color:var(--faint)">opt</span>`:""}</td>
   <td style="color:${t.type==="purchase"?"var(--buy)":"var(--sell)"}">${TYPE[t.type]||esc(t.type)}</td>
-  <td class="n">${money(t.value)}</td>
+  <td class="n">${approx(t.value)}</td>
   <td class="n">${t.lag==null?"—":t.lag+"d"}</td>
   <td>${esc(t.sector)||"—"}</td>
   <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">${esc(t.chamber)}</a>`:esc(t.chamber)}</td></tr>`);
@@ -538,9 +568,15 @@ $("#q-ins").addEventListener("input", refreshIns);
 $("#f-overlap").addEventListener("change", refreshIns);
 refreshIns();
 
+/* One card per ticker, not per trade: two insiders buying the same company on
+   the same day would otherwise render the same price series twice. Filter to
+   charted tickers before taking six, or a ticker with no price history costs
+   a slot instead of yielding it to the next-largest buy. */
+const insSeen = new Set();
 $("#ins-charts").innerHTML = DATA.insider.slice()
-  .sort((a,b)=>b.value-a.value).slice(0,6)
-  .filter(t=>DATA.prices[t.ticker])
+  .sort((a,b)=>b.value-a.value)
+  .filter(t=>DATA.prices[t.ticker] && !insSeen.has(t.ticker) && insSeen.add(t.ticker))
+  .slice(0,6)
   .map(t=>`<div class="mini"><h3>${esc(t.ticker)}</h3>
     <p class="sub">${esc(t.name)} · ${money(t.value)} · ${esc(t.date)}</p>
     ${chart(DATA.prices[t.ticker], 380, 120)}${legend(t.ticker)}</div>`).join("")

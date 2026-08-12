@@ -16,8 +16,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from xml.etree import ElementTree as ET
+
 import analyzer
+import committees
 import config
+import export
 import history
 import notifier
 import openinsider_fetcher
@@ -1189,3 +1193,81 @@ def test_format_summary_handles_empty_history(stub_state):
     out = history.format_summary(history.performance_summary())
     assert "0 recorded" in out
     assert "no matured alerts yet" in out or "no records yet" in out
+
+
+# ── Committee names ───────────────────────────────────────────────────────────
+
+MEMBERDATA_FIXTURE = """<?xml version="1.0"?>
+<MemberData>
+  <committees>
+    <committee comcode="FA00"><committee-fullname>Committee on Foreign Affairs</committee-fullname>
+      <subcommittee subcomcode="FA05"><subcommittee-fullname>East Asia and Pacific</subcommittee-fullname></subcommittee>
+    </committee>
+    <committee comcode="BA00"><committee-fullname>Committee on Financial Services</committee-fullname>
+      <subcommittee subcomcode="BA16"><subcommittee-fullname>Capital Markets</subcommittee-fullname></subcommittee>
+    </committee>
+    <committee comcode="BU00"><committee-fullname>Committee on the Budget</committee-fullname></committee>
+    <committee comcode="IG00"><committee-fullname>Permanent Select Committee on Intelligence</committee-fullname></committee>
+    <committee comcode="ZS00"><committee-fullname>Select Committee on the  Strategic Competition</committee-fullname></committee>
+  </committees>
+</MemberData>
+"""
+
+
+def test_committee_names_come_from_the_xml_not_a_hardcoded_map():
+    """FA00 is Foreign Affairs. A hand-written map once had it as Financial
+    Services, which flagged 54 members with conflicts they do not have."""
+    root = ET.fromstring(MEMBERDATA_FIXTURE)
+    comms, subs = committees._parse_house_committee_names(root)
+
+    assert comms["FA00"] == "Foreign Affairs"
+    assert comms["BA00"] == "Financial Services"
+    assert comms["BU00"] == "Budget"
+    assert subs["FA05"] == "East Asia and Pacific"
+    assert subs["BA16"] == "Capital Markets"
+
+
+def test_long_committee_forms_are_left_intact():
+    root = ET.fromstring(MEMBERDATA_FIXTURE)
+    comms, _ = committees._parse_house_committee_names(root)
+    assert comms["IG00"] == "Permanent Select Committee on Intelligence"
+    # Doubled whitespace in the source is collapsed.
+    assert comms["ZS00"] == "Select Committee on the Strategic Competition"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("Delaney, April McClain",     "April McClain Delaney"),
+    ("Taylor, David J.",           "David J. Taylor"),
+    ("John Boozman",               "John Boozman"),
+    ("Jerry Moran,",               "Jerry Moran"),
+    ("A. Mitchell McConnell, Jr.", "A. Mitchell McConnell, Jr."),
+    ("Cisneros, Gilbert",          "Gilbert Cisneros"),
+])
+def test_display_name_normalizes_both_chambers(raw, expected):
+    assert committees.display_name(raw) == expected
+
+
+# ── Dashboard signal set ──────────────────────────────────────────────────────
+
+def test_dashboard_shows_live_signals_not_just_todays():
+    """analyze() suppresses already-emailed alerts, so the page must re-derive
+    the full set — otherwise a quiet day renders as zero signals."""
+    trades = [
+        trade(representative="Rep A", ticker="NVDA", transaction_date="2026-07-01"),
+        trade(representative="Rep B", ticker="NVDA", transaction_date="2026-07-02"),
+        trade(representative="Rep C", ticker="NVDA", transaction_date="2026-07-03"),
+    ]
+    signals = export.current_signals(trades, [], {}, fired=[])
+    assert signals, "detectors should still find the cluster with nothing new today"
+    assert all(s.meta["is_new"] is False for s in signals)
+
+
+def test_signals_emailed_this_run_are_marked_new():
+    trades = [
+        trade(representative="Rep A", ticker="NVDA", transaction_date="2026-07-01"),
+        trade(representative="Rep B", ticker="NVDA", transaction_date="2026-07-02"),
+        trade(representative="Rep C", ticker="NVDA", transaction_date="2026-07-03"),
+    ]
+    fired = export.current_signals(trades, [], {}, fired=[])
+    again = export.current_signals(trades, [], {}, fired=fired)
+    assert any(s.meta["is_new"] for s in again)

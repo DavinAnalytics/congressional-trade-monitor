@@ -24,15 +24,23 @@ from analyzer import (
     parse_amount_value,
     disclosure_lag_days,
     find_cross_signals,
+    enrich_and_score,
+    detect_cluster_alerts,
+    detect_winrate_alerts,
+    detect_watchlist_alerts,
+    detect_cross_cluster_alerts,
     _download_closes,
 )
-from committees import flag_conflicts, get_member_committees
+from committees import flag_conflicts, get_member_committees, display_name
 
 SITE_DIR = Path(__file__).parent / "site"
 TEMPLATE = SITE_DIR / "template.html"
 
-# Tickers charted on the page: every alerted ticker plus the largest insider buys.
-MAX_CHART_TICKERS = 14
+# Charted tickers, budgeted per section rather than from one shared pool: the
+# page now lists every live signal, so a single cap let ~19 alert tickers take
+# all the slots and the insider section rendered empty.
+MAX_ALERT_CHARTS = 10
+MAX_INSIDER_CHARTS = 6
 CHART_DAYS = 180
 
 
@@ -74,13 +82,53 @@ def _price_series(ticker: str, start: datetime) -> dict | None:
 
 # ── Payload ───────────────────────────────────────────────────────────────────
 
+def _signature(alert) -> tuple:
+    """
+    Identity of an alert by the trades that produced it — stable across two
+    detector runs over the same data, so a signal rebuilt for the dashboard can
+    be matched against the one the digest actually emailed.
+    """
+    parts = []
+    for t in alert.trades:
+        who = t.get("name") or t.get("representative", "")
+        parts.append(f"{who}|{t.get('ticker','')}|{t.get('transaction_date','')}")
+    return (alert.tier, alert.ticker, tuple(sorted(parts)))
+
+
+def current_signals(recent: list[dict], insider_trades: list[dict],
+                    win_rates: dict, fired: list) -> list:
+    """
+    Every signal live in the current window, ranked — not just the ones that
+    fired today.
+
+    The digest deliberately suppresses signals it has already emailed, so the
+    alerts monitor.poll() hands over are a one-day delta and would leave this
+    page reading "0 signals" on any quiet day. The detectors themselves are
+    pure — analyze() is what touches the seen-state — so re-running them here
+    rebuilds the full picture without making the next real run go quiet.
+    """
+    alerts = (
+        detect_cluster_alerts(recent)
+        + detect_winrate_alerts(recent, win_rates)
+        + detect_watchlist_alerts(recent)
+        + detect_cross_cluster_alerts(recent, insider_trades)
+    )
+    fired_sigs = {_signature(a) for a in fired}
+    for a in alerts:
+        enrich_and_score(a, win_rates)
+        a.meta["is_new"] = _signature(a) in fired_sigs
+    alerts.sort(key=lambda a: a.score, reverse=True)
+    return alerts
+
+
 def _alert_payload(alerts: list) -> list[dict]:
     out = []
     for a in alerts:
         members = a.meta.get("members", [])
         conflicts = []
         for m in members:
-            conflicts += [f"{m}: {c}" for c in flag_conflicts(m, a.ticker)]
+            conflicts += [f"{display_name(m)}: {c}"
+                          for c in flag_conflicts(m, a.ticker)]
 
         insider = [t for t in a.trades if t.get("source") == "insider"]
         congress = [t for t in a.trades if t.get("source") != "insider"]
@@ -92,7 +140,8 @@ def _alert_payload(alerts: list) -> list[dict]:
             "score":     a.score,
             "headline":  a.message.splitlines()[0],
             "direction": a.meta.get("direction", "buy"),
-            "members":   members,
+            "is_new":    a.meta.get("is_new", False),
+            "members":   [display_name(m) for m in members],
             "congress_dollars": a.meta.get("congress_dollars", 0.0),
             "insider_dollars":  a.meta.get("insider_dollars", 0.0),
             "lag_days":  a.meta.get("median_lag_days"),
@@ -110,7 +159,7 @@ def _alert_payload(alerts: list) -> list[dict]:
 def _trade_row(t: dict) -> dict:
     return {
         "chamber":    t.get("chamber", ""),
-        "member":     t.get("representative", ""),
+        "member":     display_name(t.get("representative", "")),
         "ticker":     t.get("ticker", ""),
         "type":       t.get("type", ""),
         "date":       t.get("transaction_date", ""),
@@ -146,7 +195,7 @@ def _leaderboard(win_rates: dict) -> list[dict]:
             continue
         data = get_member_committees(member) or {}
         rows.append({
-            "member":     member,
+            "member":     display_name(member),
             "wins":       s["wins"],
             "total":      s["total"],
             "win_rate":   round(s["win_rate"], 4),
@@ -160,10 +209,22 @@ def _leaderboard(win_rates: dict) -> list[dict]:
 
 def collect(alerts: list, trades: list[dict], insider_trades: list[dict],
             win_rates: dict) -> dict:
-    """Assemble everything the page needs into one JSON-serialisable dict."""
+    """
+    Assemble everything the page needs into one JSON-serialisable dict.
+
+    `alerts` is what the digest emailed this run; the page shows every live
+    signal and marks those as new.
+    """
     print("  Collecting dashboard data...")
 
-    alert_rows = _alert_payload(alerts)
+    cutoff = datetime.now() - timedelta(days=config.FETCH_DAYS)
+    recent = [
+        t for t in trades
+        if datetime.strptime(t["transaction_date"], "%Y-%m-%d") >= cutoff
+    ]
+    signals = current_signals(recent, insider_trades, win_rates, alerts)
+
+    alert_rows = _alert_payload(signals)
     congress_tickers = {t["ticker"].upper() for t in trades if t["type"] == "purchase"}
 
     cross = [
@@ -178,12 +239,18 @@ def collect(alerts: list, trades: list[dict], insider_trades: list[dict],
         for m in find_cross_signals(trades, insider_trades)
     ]
 
-    # Charts: alerted tickers first, then the biggest insider buys.
-    chart_tickers = list(dict.fromkeys(
-        [a["ticker"] for a in alert_rows]
-        + [t["ticker"] for t in sorted(insider_trades,
-                                       key=lambda x: x.get("value", 0), reverse=True)]
-    ))[:MAX_CHART_TICKERS]
+    # Charts: the highest-scoring alerts, then the biggest insider buys. Each
+    # section gets its own budget so a busy alert window cannot starve the other.
+    alert_charts = list(dict.fromkeys(
+        a["ticker"] for a in alert_rows
+    ))[:MAX_ALERT_CHARTS]
+    insider_charts = [
+        t for t in dict.fromkeys(
+            x["ticker"] for x in sorted(insider_trades,
+                                        key=lambda x: x.get("value", 0), reverse=True)
+        ) if t not in alert_charts
+    ][:MAX_INSIDER_CHARTS]
+    chart_tickers = alert_charts + insider_charts
 
     start = datetime.now() - timedelta(days=CHART_DAYS)
     prices = {}
@@ -207,6 +274,7 @@ def collect(alerts: list, trades: list[dict], insider_trades: list[dict],
         "counts": {
             "trades":   len(trades),
             "alerts":   len(alert_rows),
+            "new":      sum(1 for a in alert_rows if a["is_new"]),
             "insider":  len(insider_trades),
             "members":  len({t["representative"] for t in trades}),
         },
@@ -255,38 +323,19 @@ def main():
     """Standalone build — re-fetches everything. CI uses build() from monitor."""
     from fetcher import fetch_all
     from openinsider_fetcher import fetch_all as fetch_insider, InsiderFetchError
-    from analyzer import compute_win_rates, detect_cluster_alerts, detect_watchlist_alerts, \
-        detect_winrate_alerts, detect_cross_cluster_alerts, enrich_and_score
+    from analyzer import compute_win_rates
     from committees import load_all
 
     load_all()
     trades = fetch_all(days=CHART_DAYS)
-    recent = [
-        t for t in trades
-        if datetime.strptime(t["transaction_date"], "%Y-%m-%d")
-        >= datetime.now() - timedelta(days=config.FETCH_DAYS)
-    ]
     try:
         insider = fetch_insider(days=config.FETCH_DAYS)
     except InsiderFetchError as e:
         print(f"  ⚠ {e}")
         insider = []
 
-    win_rates = compute_win_rates(trades)
-
-    # Detectors directly, not analyze() — that mutates the seen-state and would
-    # suppress the next real run's alerts.
-    alerts = (
-        detect_cluster_alerts(recent)
-        + detect_winrate_alerts(recent, win_rates)
-        + detect_watchlist_alerts(recent)
-        + detect_cross_cluster_alerts(recent, insider)
-    )
-    for a in alerts:
-        enrich_and_score(a, win_rates)
-    alerts.sort(key=lambda a: a.score, reverse=True)
-
-    build(alerts, trades, insider, win_rates)
+    # No alerts to mark as new — collect() runs the detectors itself.
+    build([], trades, insider, compute_win_rates(trades))
 
 
 if __name__ == "__main__":
