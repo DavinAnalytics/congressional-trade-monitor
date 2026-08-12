@@ -19,6 +19,17 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Needed to publish the static dashboard to GitHub Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a queued run should not clobber one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
@@ -53,10 +64,10 @@ jobs:
           DAY_PST=$(TZ="America/Los_Angeles" date +%u)
           if [ "$DAY_PST" = "7" ]; then
             echo "It is Sunday in California — running weekly summary"
-            python monitor.py --summary
+            python monitor.py --summary --export
           else
             echo "It is Mon-Sat in California — running alert monitor"
-            python monitor.py --once
+            python monitor.py --once --export
           fi
 
           # Monthly review runs in addition to the daily alerts, not instead of
@@ -67,3 +78,25 @@ jobs:
             echo "First of the month in California — sending monthly review"
             python monitor.py --monthly
           fi
+
+      # The dashboard is rebuilt by --export above from data the run already
+      # fetched, so publishing costs a file upload rather than a second scrape.
+      - name: Upload dashboard
+        if: hashFiles('site/index.html') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: monitor
+    runs-on: ubuntu-latest
+    # Skipped on reset runs, which exit before building the site.
+    if: needs.monitor.result == 'success'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4

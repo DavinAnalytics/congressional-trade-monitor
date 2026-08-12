@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Congressional Trade Monitor</title>
+<style>
+/* ── Tokens ────────────────────────────────────────────────────────────────
+   Light is the base set. Dark redefines only the tokens, once for the
+   un-stamped system state and once for an explicit toggle, so every one of the
+   three viewer states resolves a complete palette. */
+:root {
+  --ground:#FBFBFD; --surface:#FFFFFF; --raised:#F4F5F8;
+  --ink:#171A21; --ink-2:#3D4351; --muted:#5C6373; --faint:#8B92A2;
+  --line:#E3E6EC; --line-2:#CFD4DE;
+  --accent:#9C6F1E; --accent-soft:#F4EBD8;
+  --buy:#12734A; --buy-soft:#E4F2EA;
+  --sell:#B3352A; --sell-soft:#FAE8E6;
+  --warn:#8A5A12; --warn-soft:#FBF0DC;
+  --shadow:0 1px 2px rgba(16,20,28,.06),0 4px 14px rgba(16,20,28,.05);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#12151C; --surface:#191D26; --raised:#212632;
+    --ink:#E7EAF1; --ink-2:#C3C9D6; --muted:#949CAE; --faint:#6E7688;
+    --line:#262B36; --line-2:#343B49;
+    --accent:#D9A441; --accent-soft:#332A17;
+    --buy:#4ADE80; --buy-soft:#132A1E;
+    --sell:#F87171; --sell-soft:#301A19;
+    --warn:#E0B252; --warn-soft:#2E2616;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#12151C; --surface:#191D26; --raised:#212632;
+  --ink:#E7EAF1; --ink-2:#C3C9D6; --muted:#949CAE; --faint:#6E7688;
+  --line:#262B36; --line-2:#343B49;
+  --accent:#D9A441; --accent-soft:#332A17;
+  --buy:#4ADE80; --buy-soft:#132A1E;
+  --sell:#F87171; --sell-soft:#301A19;
+  --warn:#E0B252; --warn-soft:#2E2616;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 14px rgba(0,0,0,.3);
+}
+</style>
+<style>
+:root{
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,serif;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--sans); font-size:15px; line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+h1,h2,h3{margin:0;font-family:var(--serif);font-weight:600;text-wrap:balance;letter-spacing:-.01em}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{
+  font-size:11px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--faint);font-weight:600;
+}
+
+/* ── Header ── */
+header{border-bottom:1px solid var(--line);background:var(--surface)}
+.head-top{display:flex;flex-wrap:wrap;align-items:baseline;gap:14px;padding:26px 0 18px}
+h1{font-size:26px}
+.stamp{font-size:12px;color:var(--faint);font-family:var(--mono)}
+.head-top .spacer{flex:1}
+.tbtn{
+  border:1px solid var(--line-2);background:var(--surface);color:var(--muted);
+  font:inherit;font-size:12px;padding:5px 11px;border-radius:3px;cursor:pointer;
+}
+.tbtn:hover{color:var(--ink);border-color:var(--accent)}
+.stats{display:flex;flex-wrap:wrap;gap:34px;padding:0 0 22px}
+.stat b{display:block;font-family:var(--mono);font-size:23px;font-weight:600;line-height:1.15}
+.stat span{font-size:11.5px;color:var(--faint);letter-spacing:.05em;text-transform:uppercase}
+
+/* ── Verdict: the summary that comes before any detail ── */
+.verdict{padding:22px 0 4px}
+.finding{
+  display:flex;gap:13px;padding:14px 16px;margin:0 0 9px;
+  background:var(--surface);border:1px solid var(--line);
+  border-left:3px solid var(--line-2);box-shadow:var(--shadow);
+}
+.finding.good{border-left-color:var(--buy)}
+.finding.watch{border-left-color:var(--warn)}
+.finding.action{border-left-color:var(--sell)}
+.finding.pending{border-left-color:var(--line-2)}
+.finding .mark{font-family:var(--mono);font-size:12px;font-weight:700;padding-top:2px}
+.finding.good .mark{color:var(--buy)}
+.finding.watch .mark{color:var(--warn)}
+.finding.action .mark{color:var(--sell)}
+.finding.pending .mark{color:var(--faint)}
+.finding h3{font-size:15px;margin:0 0 3px}
+.finding p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.6}
+.finding code{
+  display:block;margin:9px 0 0;padding:8px 10px;background:var(--raised);
+  border:1px dashed var(--line-2);font-family:var(--mono);font-size:12px;
+  color:var(--ink-2);white-space:pre-wrap;word-break:break-word;
+}
+
+/* ── Tabs ── */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:26px 0 0;overflow-x:auto}
+.tab{
+  border:0;background:none;font:inherit;font-size:14px;color:var(--muted);
+  padding:11px 15px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;
+}
+.tab:hover{color:var(--ink)}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.tab .c{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-left:5px}
+.panel{padding:26px 0 70px}
+.panel[hidden]{display:none}
+
+/* ── Controls ── */
+.controls{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin:0 0 16px}
+.controls input,.controls select{
+  font:inherit;font-size:13px;padding:6px 9px;background:var(--surface);
+  color:var(--ink);border:1px solid var(--line-2);border-radius:3px;
+}
+.controls input[type=search]{min-width:210px}
+.controls label{font-size:12px;color:var(--faint)}
+.hint{font-size:12px;color:var(--faint);margin-left:auto;font-family:var(--mono)}
+
+/* ── Alert cards ── */
+.card{
+  background:var(--surface);border:1px solid var(--line);
+  box-shadow:var(--shadow);margin:0 0 14px;
+}
+.card-head{
+  display:flex;flex-wrap:wrap;align-items:center;gap:11px;
+  padding:14px 17px;cursor:pointer;width:100%;border:0;background:none;
+  font:inherit;text-align:left;color:inherit;
+}
+.card-head:hover{background:var(--raised)}
+.rank{font-family:var(--mono);font-size:12px;color:var(--faint);min-width:22px}
+.chip{
+  font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 7px;
+  border-radius:2px;white-space:nowrap;font-family:var(--mono);
+}
+.chip.cross_cluster{background:var(--accent-soft);color:var(--accent)}
+.chip.cluster{background:var(--sell-soft);color:var(--sell)}
+.chip.winrate{background:var(--warn-soft);color:var(--warn)}
+.chip.watchlist{background:var(--buy-soft);color:var(--buy)}
+.tick{font-family:var(--serif);font-size:19px;font-weight:600}
+.card-head .spacer{flex:1}
+.score{font-family:var(--mono);font-weight:700;font-size:15px}
+.score small{color:var(--faint);font-weight:400}
+.meter{width:54px;height:4px;background:var(--line);position:relative}
+.meter i{position:absolute;inset:0 auto 0 0;background:var(--accent)}
+.card-body{padding:0 17px 17px;border-top:1px solid var(--line)}
+.card-body[hidden]{display:none}
+.metrics{display:flex;flex-wrap:wrap;gap:28px;padding:15px 0}
+.metrics div span{display:block;font-size:11px;color:var(--faint);letter-spacing:.05em;text-transform:uppercase}
+.metrics div b{font-family:var(--mono);font-size:15px;font-weight:600}
+.ok{color:var(--buy)} .bad{color:var(--sell)}
+.conflicts{background:var(--warn-soft);border-left:3px solid var(--warn);padding:11px 13px;margin:0 0 15px}
+.conflicts p{margin:0 0 5px;font-size:12px;font-weight:600;color:var(--warn)}
+.conflicts li{font-size:12.5px;color:var(--ink-2);margin:2px 0}
+.conflicts ul{margin:0;padding-left:17px}
+
+/* ── Tables ── */
+.tw{overflow-x:auto;border:1px solid var(--line);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{
+  text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--faint);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--line);
+  background:var(--surface);position:sticky;top:0;white-space:nowrap;
+}
+th[data-sort]{cursor:pointer;user-select:none}
+th[data-sort]:hover{color:var(--ink)}
+th .arr{opacity:.4;font-size:9px}
+td{padding:8px 12px;border-bottom:1px solid var(--line)}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--raised)}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.flag td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.empty{padding:34px 16px;text-align:center;color:var(--faint);font-size:13.5px}
+
+/* ── Charts ── */
+.chart{margin:6px 0 4px}
+.chart svg{display:block;width:100%;height:auto}
+.legend{display:flex;gap:16px;font-size:11.5px;color:var(--muted);margin:2px 0 0}
+.legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:5px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:15px}
+.mini{background:var(--surface);border:1px solid var(--line);padding:13px 15px}
+.mini h3{font-size:14px;margin:0 0 1px}
+.mini .sub{font-size:11.5px;color:var(--faint);font-family:var(--mono);margin:0 0 7px}
+
+/* ── Performance ── */
+pre.perf{
+  margin:0;padding:16px;background:var(--surface);border:1px solid var(--line);
+  font-family:var(--mono);font-size:12px;line-height:1.65;color:var(--ink-2);
+  overflow-x:auto;white-space:pre;
+}
+.note{font-size:13px;color:var(--muted);margin:0 0 16px;max-width:70ch;line-height:1.65}
+footer{border-top:1px solid var(--line);padding:20px 0 40px;font-size:12px;color:var(--faint)}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media (max-width:640px){
+  .wrap{padding:0 15px}
+  .stats{gap:22px}
+  h1{font-size:21px}
+  .metrics{gap:18px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="head-top">
+      <h1>Congressional Trade Monitor</h1>
+      <span class="stamp" id="stamp"></span>
+      <span class="spacer"></span>
+      <button class="tbtn" id="theme" type="button">Theme</button>
+    </div>
+    <div class="stats" id="stats"></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="verdict">
+    <p class="eyebrow" style="margin:0 0 10px">Is the monitor working?</p>
+    <div id="findings"></div>
+  </section>
+
+  <div class="tabs" role="tablist" id="tabs"></div>
+
+  <section class="panel" id="p-signals" role="tabpanel"></section>
+
+  <section class="panel" id="p-trades" role="tabpanel" hidden>
+    <div class="controls">
+      <input type="search" id="q" placeholder="Search member or ticker" aria-label="Search trades">
+      <select id="f-sector" aria-label="Filter by sector"></select>
+      <select id="f-type" aria-label="Filter by type">
+        <option value="">All types</option><option value="purchase">Purchase</option>
+        <option value="sale">Sale</option><option value="sale_partial">Partial sale</option>
+      </select>
+      <select id="f-chamber" aria-label="Filter by chamber">
+        <option value="">Both chambers</option><option>House</option><option>Senate</option>
+      </select>
+      <label for="f-days">Last <select id="f-days">
+        <option value="45">45</option><option value="90">90</option>
+        <option value="180" selected>180</option></select> days</label>
+      <span class="hint" id="t-count"></span>
+    </div>
+    <div class="tw"><table id="t-trades"></table></div>
+  </section>
+
+  <section class="panel" id="p-board" role="tabpanel" hidden>
+    <p class="note">Win rate is the share of a member's purchases that beat SPY over
+      <span class="num" id="wr-window"></span> days. Members with fewer than
+      <span class="num" id="wr-min"></span> scored trades are excluded — below that the
+      number is noise.</p>
+    <div class="tw"><table id="t-board"></table></div>
+  </section>
+
+  <section class="panel" id="p-insider" role="tabpanel" hidden>
+    <p class="note">Open-market purchases by Section 16 insiders. Rows marked with an
+      accent bar are tickers Congress also bought in the same window — the overlap
+      that produces a cross-signal.</p>
+    <div class="controls">
+      <input type="search" id="q-ins" placeholder="Search insider, company or ticker" aria-label="Search insider buys">
+      <label><input type="checkbox" id="f-overlap"> Overlapping only</label>
+      <span class="hint" id="i-count"></span>
+    </div>
+    <div class="tw"><table id="t-insider"></table></div>
+    <h2 style="font-size:17px;margin:30px 0 4px">Largest insider buys</h2>
+    <p class="note">Price against SPY since the purchase, both indexed to 100.</p>
+    <div class="grid2" id="ins-charts"></div>
+  </section>
+
+  <section class="panel" id="p-perf" role="tabpanel" hidden>
+    <p class="note">Every alert is scored twice: from the politician's trade date, and
+      from the day the alert actually reached you. Only the second says whether this
+      tool is worth running — disclosure lag means the first includes returns you had
+      no way to capture. Both are measured against a control group of congressional
+      trades that never triggered an alert.</p>
+    <pre class="perf" id="perf"></pre>
+  </section>
+</div>
+
+<footer><div class="wrap">
+  Data from efdsearch.senate.gov, disclosures-clerk.house.gov and openinsider.com.
+  Rebuilt daily by GitHub Actions. Not investment advice.
+</div></footer>
+
+<script>
+const DATA = /*__DATA__*/null;
+const $ = (s,r=document)=>r.querySelector(s);
+const el = (t,c,h)=>{const n=document.createElement(t); if(c)n.className=c; if(h!=null)n.innerHTML=h; return n;};
+const esc = s => String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const money = v => !v ? "—" : v>=1e6 ? "$"+(v/1e6).toFixed(1)+"M" : v>=1e3 ? "$"+Math.round(v/1e3)+"K" : "$"+Math.round(v);
+const pct = v => v==null ? "—" : (v>=0?"+":"")+v.toFixed(1)+"%";
+const TYPE = {purchase:"Purchase", sale:"Sale", sale_partial:"Partial sale"};
+
+/* ── Theme toggle: explicit choice wins over the OS in both directions ── */
+$("#theme").onclick = () => {
+  const now = document.documentElement.getAttribute("data-theme")
+    || (matchMedia("(prefers-color-scheme:dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", now === "dark" ? "light" : "dark");
+};
+
+/* ── Header ── */
+$("#stamp").textContent = "Built " + DATA.generated_at;
+const C = DATA.counts;
+$("#stats").innerHTML = [
+  [C.alerts, "Signals"], [C.trades, "Trades / "+DATA.window_days+"d"],
+  [C.members, "Members"], [C.insider, "Insider buys"],
+].map(([n,l])=>`<div class="stat"><b>${n}</b><span>${l}</span></div>`).join("");
+
+/* ── Verdict ── */
+const MARK = {good:"OK", watch:"WATCH", action:"ACTION", pending:"PENDING"};
+$("#findings").innerHTML = DATA.findings.length ? DATA.findings.map(f=>`
+  <div class="finding ${f.severity}">
+    <span class="mark">${MARK[f.severity]||""}</span>
+    <div>
+      <h3>${esc(f.headline)}</h3>
+      <p>${esc(f.detail)}</p>
+      ${f.action?`<code>To act on this, send: "${esc(f.action)}"</code>`:""}
+    </div>
+  </div>`).join("")
+  : `<div class="finding pending"><span class="mark">PENDING</span><div>
+     <h3>No findings yet</h3><p>Alerts need to mature before performance can be judged.</p></div></div>`;
+
+/* ── Tabs ── */
+const TABS = [
+  ["signals","Signals",DATA.alerts.length],
+  ["trades","Trades",DATA.trades.length],
+  ["board","Leaderboard",DATA.leaderboard.length],
+  ["insider","Insider buys",DATA.insider.length],
+  ["perf","Performance",null],
+];
+$("#tabs").innerHTML = TABS.map(([id,label,n],i)=>
+  `<button class="tab" role="tab" data-t="${id}" aria-selected="${i===0}">${label}${
+    n!=null?`<span class="c">${n}</span>`:""}</button>`).join("");
+$("#tabs").onclick = e => {
+  const b = e.target.closest(".tab"); if(!b) return;
+  document.querySelectorAll(".tab").forEach(t=>t.setAttribute("aria-selected", t===b));
+  TABS.forEach(([id])=>$("#p-"+id).hidden = id !== b.dataset.t);
+};
+
+/* ── Charts: two lines indexed to 100, faint grid, emphasised endpoint ── */
+function chart(series, w=560, h=150){
+  if(!series) return `<p class="empty">No price history.</p>`;
+  const pad = {t:8,r:44,b:16,l:4};
+  const all = series.ticker.concat(series.spy);
+  const lo = Math.min(...all), hi = Math.max(...all), span = (hi-lo)||1;
+  const X = i => pad.l + i*(w-pad.l-pad.r)/(series.dates.length-1);
+  const Y = v => pad.t + (hi-v)/span*(h-pad.t-pad.b);
+  const path = a => a.map((v,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)).join(" ");
+  const area = a => path(a)+` L${X(a.length-1).toFixed(1)} ${h-pad.b} L${X(0).toFixed(1)} ${h-pad.b} Z`;
+  const grid = [0,.5,1].map(f=>{
+    const v = lo+f*span;
+    return `<line x1="${pad.l}" x2="${w-pad.r}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}"
+            stroke="var(--line)" stroke-width="1"/>
+            <text x="${w-pad.r+6}" y="${(Y(v)+3.5).toFixed(1)}" font-size="9.5"
+            fill="var(--faint)" font-family="var(--mono)">${v.toFixed(0)}</text>`;
+  }).join("");
+  const endT = series.ticker[series.ticker.length-1], endS = series.spy[series.spy.length-1];
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Price versus SPY, indexed to 100">
+    ${grid}
+    <path d="${area(series.ticker)}" fill="var(--accent)" opacity=".07"/>
+    <path d="${path(series.spy)}" fill="none" stroke="var(--muted)" stroke-width="1.3"
+          stroke-dasharray="3 3" opacity=".8"/>
+    <path d="${path(series.ticker)}" fill="none" stroke="var(--accent)" stroke-width="1.9"/>
+    <circle cx="${X(series.ticker.length-1).toFixed(1)}" cy="${Y(endT).toFixed(1)}" r="3" fill="var(--accent)"/>
+    <circle cx="${X(series.spy.length-1).toFixed(1)}" cy="${Y(endS).toFixed(1)}" r="2.4" fill="var(--muted)"/>
+  </svg>`;
+}
+const legend = t => `<div class="legend">
+  <span><i style="background:var(--accent)"></i>${esc(t)}</span>
+  <span><i style="background:var(--muted)"></i>SPY</span></div>`;
+
+/* ── Signals ── */
+$("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
+  const right = a.excess==null ? null : (a.direction==="buy" ? a.excess>0 : a.excess<0);
+  const lag = a.lag_days==null ? "unknown"
+    : a.lag_days+"d "+(a.lag_days<=14?"(fresh)":a.lag_days<=30?"(aging)":"(stale)");
+  const m = [];
+  if(a.congress_dollars) m.push(["Congress size", money(a.congress_dollars),""]);
+  if(a.insider_dollars)  m.push(["Insider size", money(a.insider_dollars),""]);
+  m.push(["Disclosure lag", lag, ""]);
+  if(a.pct_since!=null) m.push(["Since trade date",
+      pct(a.pct_since)+(a.spy_since!=null?` (SPY ${pct(a.spy_since)})`:""),
+      right==null?"":right?"ok":"bad"]);
+  return `<article class="card">
+    <button class="card-head" aria-expanded="${i===0}" data-card="${i}">
+      <span class="rank num">#${i+1}</span>
+      <span class="chip ${a.tier}">${esc(a.label)}</span>
+      <span class="tick">${esc(a.ticker)}</span>
+      <span class="spacer"></span>
+      <span class="meter"><i style="width:${Math.max(2,a.score)}%"></i></span>
+      <span class="score">${a.score.toFixed(0)}<small>/100</small></span>
+    </button>
+    <div class="card-body" ${i===0?"":"hidden"} id="body-${i}">
+      <div class="metrics">${m.map(([k,v,cl])=>
+        `<div><span>${k}</span><b class="${cl}">${esc(v)}</b></div>`).join("")}</div>
+      <p class="note" style="margin:0 0 14px">${esc(a.headline)}</p>
+      ${a.conflicts.length?`<div class="conflicts"><p>Committees with oversight relevant to ${esc(a.ticker)}</p>
+        <ul>${a.conflicts.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></div>`:""}
+      ${DATA.prices[a.ticker]?`<div class="chart">${chart(DATA.prices[a.ticker])}${legend(a.ticker)}</div>`:""}
+      <div class="tw" style="margin-top:14px"><table>
+        <thead><tr><th>Member</th><th>Type</th><th>Date</th><th>Lag</th><th>Amount</th><th>Filing</th></tr></thead>
+        <tbody>${a.congress.map(t=>`<tr>
+          <td>${esc(t.member)}${t.owner?` <span style="color:var(--faint)">(${esc(t.owner)})</span>`:""}</td>
+          <td style="color:${t.type==="purchase"?"var(--buy)":"var(--sell)"}">${TYPE[t.type]||esc(t.type)}</td>
+          <td class="n">${esc(t.date)}</td><td class="n">${t.lag==null?"—":t.lag+"d"}</td>
+          <td class="n">${money(t.value)}</td>
+          <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">Filing</a>`:"—"}</td></tr>`).join("")}</tbody>
+      </table></div>
+      ${a.insider.length?`<div class="tw" style="margin-top:11px"><table>
+        <thead><tr><th>Insider</th><th>Title</th><th>Date</th><th>Value</th><th>Filing</th></tr></thead>
+        <tbody>${a.insider.map(t=>`<tr><td>${esc(t.name)}</td><td>${esc(t.title)}</td>
+          <td class="n">${esc(t.date)}</td><td class="n">${money(t.value)}</td>
+          <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">Filing</a>`:"—"}</td></tr>`).join("")}</tbody>
+      </table></div>`:""}
+    </div></article>`;
+}).join("") : `<p class="empty">No signals in the current window.</p>`;
+
+$("#p-signals").onclick = e => {
+  const b = e.target.closest(".card-head"); if(!b) return;
+  const body = $("#body-"+b.dataset.card);
+  body.hidden = !body.hidden;
+  b.setAttribute("aria-expanded", !body.hidden);
+};
+
+/* ── Sortable table helper ── */
+function sortable(tableSel, cols, getRows, render){
+  let key = null, dir = -1;
+  const table = $(tableSel);
+  function draw(){
+    let rows = getRows();
+    if(key){
+      const c = cols.find(c=>c.k===key);
+      rows = rows.slice().sort((a,b)=>{
+        const x=c.v(a), y=c.v(b);
+        return (typeof x==="number"? x-y : String(x).localeCompare(String(y))) * dir;
+      });
+    }
+    table.innerHTML = `<thead><tr>${cols.map(c=>
+      `<th data-sort="${c.k}">${c.t}${key===c.k?` <span class="arr">${dir<0?"▼":"▲"}</span>`:""}</th>`
+      ).join("")}</tr></thead><tbody>${rows.map(render).join("")}</tbody>`;
+    if(!rows.length) table.innerHTML += `<tbody><tr><td colspan="${cols.length}" class="empty">Nothing matches those filters.</td></tr></tbody>`;
+    return rows.length;
+  }
+  table.addEventListener("click", e=>{
+    const th = e.target.closest("th[data-sort]"); if(!th) return;
+    if(key===th.dataset.sort) dir = -dir; else {key = th.dataset.sort; dir = -1;}
+    draw();
+  });
+  return draw;
+}
+
+/* ── Trades ── */
+const sectors = [...new Set(DATA.trades.map(t=>t.sector).filter(Boolean))].sort();
+$("#f-sector").innerHTML = `<option value="">All sectors</option>`+
+  sectors.map(s=>`<option>${esc(s)}</option>`).join("");
+
+function tradeRows(){
+  const q = $("#q").value.trim().toLowerCase(), sec = $("#f-sector").value,
+        ty = $("#f-type").value, ch = $("#f-chamber").value,
+        days = +$("#f-days").value;
+  const cut = new Date(Date.now()-days*864e5).toISOString().slice(0,10);
+  return DATA.trades.filter(t =>
+    t.date >= cut &&
+    (!sec || t.sector===sec) && (!ty || t.type===ty) && (!ch || t.chamber===ch) &&
+    (!q || t.member.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)));
+}
+const drawTrades = sortable("#t-trades", [
+  {k:"date",   t:"Date",     v:t=>t.date},
+  {k:"member", t:"Member",   v:t=>t.member},
+  {k:"ticker", t:"Ticker",   v:t=>t.ticker},
+  {k:"type",   t:"Type",     v:t=>t.type},
+  {k:"value",  t:"Amount",   v:t=>t.value},
+  {k:"lag",    t:"Lag",      v:t=>t.lag??999},
+  {k:"sector", t:"Sector",   v:t=>t.sector},
+  {k:"chamber",t:"Chamber",  v:t=>t.chamber},
+], tradeRows, t=>`<tr>
+  <td class="n">${esc(t.date)}</td>
+  <td>${esc(t.member)}${t.owner?` <span style="color:var(--faint)">(${esc(t.owner)})</span>`:""}</td>
+  <td class="n"><b>${esc(t.ticker)}</b>${t.asset_type==="option"?` <span style="color:var(--faint)">opt</span>`:""}</td>
+  <td style="color:${t.type==="purchase"?"var(--buy)":"var(--sell)"}">${TYPE[t.type]||esc(t.type)}</td>
+  <td class="n">${money(t.value)}</td>
+  <td class="n">${t.lag==null?"—":t.lag+"d"}</td>
+  <td>${esc(t.sector)||"—"}</td>
+  <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">${esc(t.chamber)}</a>`:esc(t.chamber)}</td></tr>`);
+
+function refreshTrades(){ $("#t-count").textContent = drawTrades()+" of "+DATA.trades.length; }
+["#q","#f-sector","#f-type","#f-chamber","#f-days"].forEach(s=>{
+  $(s).addEventListener("input", refreshTrades);
+});
+refreshTrades();
+
+/* ── Leaderboard ── */
+$("#wr-window").textContent = DATA.performance.window;
+$("#wr-min").textContent = DATA.win_rate_min_trades;
+sortable("#t-board", [
+  {k:"win_rate", t:"Win rate", v:r=>r.win_rate},
+  {k:"member",   t:"Member",   v:r=>r.member},
+  {k:"chamber",  t:"Chamber",  v:r=>r.chamber},
+  {k:"total",    t:"Scored",   v:r=>r.total},
+  {k:"comm",     t:"Committees", v:r=>r.committees.length},
+], ()=>DATA.leaderboard, r=>`<tr>
+  <td class="n"><b>${(r.win_rate*100).toFixed(0)}%</b>${r.qualifies?` <span style="color:var(--accent)">★</span>`:""}</td>
+  <td>${esc(r.member)}</td><td>${esc(r.chamber)||"—"}</td>
+  <td class="n">${r.wins}/${r.total}</td>
+  <td style="color:var(--muted);font-size:12px">${r.committees.map(esc).join(" · ")||"—"}</td></tr>`)();
+
+/* ── Insider ── */
+function insRows(){
+  const q = $("#q-ins").value.trim().toLowerCase(), only = $("#f-overlap").checked;
+  return DATA.insider.filter(t => (!only || t.also_congress) &&
+    (!q || t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)
+        || (t.company||"").toLowerCase().includes(q)));
+}
+const drawIns = sortable("#t-insider", [
+  {k:"date",   t:"Date",    v:t=>t.date},
+  {k:"name",   t:"Insider", v:t=>t.name},
+  {k:"title",  t:"Title",   v:t=>t.title},
+  {k:"ticker", t:"Ticker",  v:t=>t.ticker},
+  {k:"value",  t:"Value",   v:t=>t.value},
+  {k:"shares", t:"Shares",  v:t=>t.shares},
+], insRows, t=>`<tr class="${t.also_congress?"flag":""}">
+  <td class="n">${esc(t.date)}</td><td>${esc(t.name)}</td>
+  <td style="color:var(--muted)">${esc(t.title)}</td>
+  <td class="n"><b>${esc(t.ticker)}</b></td>
+  <td class="n">${money(t.value)}</td>
+  <td class="n">${t.shares?t.shares.toLocaleString():"—"}</td></tr>`);
+function refreshIns(){ $("#i-count").textContent = drawIns()+" of "+DATA.insider.length; }
+$("#q-ins").addEventListener("input", refreshIns);
+$("#f-overlap").addEventListener("change", refreshIns);
+refreshIns();
+
+$("#ins-charts").innerHTML = DATA.insider.slice()
+  .sort((a,b)=>b.value-a.value).slice(0,6)
+  .filter(t=>DATA.prices[t.ticker])
+  .map(t=>`<div class="mini"><h3>${esc(t.ticker)}</h3>
+    <p class="sub">${esc(t.name)} · ${money(t.value)} · ${esc(t.date)}</p>
+    ${chart(DATA.prices[t.ticker], 380, 120)}${legend(t.ticker)}</div>`).join("")
+  || `<p class="empty">No charted insider buys.</p>`;
+
+/* ── Performance ── */
+$("#perf").textContent = DATA.performance_text;
+</script>
+</body>
+</html>

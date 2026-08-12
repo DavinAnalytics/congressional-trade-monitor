@@ -8,6 +8,11 @@ digest_preview.html
 monthly_preview.html
 control_trades.json
 
+# ── Generated dashboard ───────────────────────────────────────────────────────
+# site/template.html is source and IS committed; these are rebuilt every run.
+site/index.html
+site/data.json
+
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

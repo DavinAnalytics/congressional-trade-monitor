@@ -1,7 +1,7 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
 **Status:** ✅ Complete — all modules built, 96 unit tests passing  
-**Live dashboard:** https://congressional-trade-monitor.streamlit.app/  
+**Live dashboard:** GitHub Pages (rebuilt daily) · Streamlit: https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends one ranked email digest on schedule, tracks whether its own alerts actually beat the market, and provides a visual dashboard for exploratory analysis.
 
@@ -102,7 +102,24 @@ cp .env.example .env
 
 ---
 
-## Dashboard
+## Static Dashboard (GitHub Pages)
+
+`export.py` writes `site/index.html` — one self-contained file with the data inlined — from the data the daily GitHub Actions run has already fetched. Published to GitHub Pages on every run.
+
+```bash
+./.venv/bin/python monitor.py --once --export   # poll + rebuild the dashboard
+./.venv/bin/python export.py                    # standalone rebuild (re-fetches)
+```
+
+Everything is computed once a day in CI, and congressional disclosures lag up to 45 days by law, so there is nothing a live server could show that a file written this morning cannot. Streamlit re-scrapes 200 House PDFs whenever its cache misses; this pays that cost once, inside a job that was already running, and serves an instant page afterwards. No build step, no Node — Python writes the HTML.
+
+Interactivity is client-side, so filtering and sorting are instant: search and sector/type/chamber/window filters over the full trade log, sortable columns everywhere, expandable signal cards, and inline SVG price-vs-SPY charts. The page carries the performance and edge-tracking view the Streamlit app never had.
+
+**One-time setup:** Settings → Pages → Source → **GitHub Actions**. Until that is set the deploy step fails; it is marked `continue-on-error` so a missing Pages config cannot fail the alert run.
+
+---
+
+## Streamlit Dashboard
 
 `dashboard.py` is a Streamlit app that provides a read-only visual interface over the same data sources the monitor uses. It **never calls `analyzer.analyze()`** — only the individual detectors — so it cannot mutate `seen_trades.json` or trigger duplicate email alerts.
 
@@ -161,6 +178,9 @@ congressional-trade-monitor/
 ├── notifier.py          # Ranked digest formatting and sending
 ├── monitor.py           # Main polling loop
 ├── dashboard.py         # Streamlit visual dashboard (read-only, no side effects)
+├── export.py            # Builds the static dashboard from the daily run's data
+├── site/
+│   └── template.html    # Static dashboard source (index.html is generated)
 ├── .env                 # Your credentials — gitignored, never committed
 ├── .env.example         # Credential template — committed, no real values
 ├── .gitignore           # Blocks .env and seen_trades.json from git

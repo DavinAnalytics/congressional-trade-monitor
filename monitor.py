@@ -17,6 +17,7 @@ import argparse
 from datetime import datetime, timedelta
 
 import config
+import export
 import history
 import review
 from fetcher            import fetch_all
@@ -41,7 +42,7 @@ def _banner(msg: str) -> None:
 
 # ── Single poll cycle ─────────────────────────────────────────────────────────
 
-def poll(wide: bool = False) -> tuple[list, list, dict]:
+def poll(wide: bool = False) -> tuple[list, list, dict, list]:
     """
     Run one full fetch → analyze → alert cycle.
 
@@ -50,7 +51,7 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
               if False, fetch FETCH_DAYS only (faster, for routine polls).
 
     Returns:
-        (alerts, trades, win_rates)
+        (alerts, trades, win_rates, insider_trades)
     """
     _banner(f"Poll started — {_now()}")
 
@@ -119,7 +120,7 @@ def poll(wide: bool = False) -> tuple[list, list, dict]:
     history.record_control(recent, all_alerts)
 
     _banner(f"Poll complete — {len(all_alerts)} alert(s) — {_now()}")
-    return all_alerts, all_trades, win_rates
+    return all_alerts, all_trades, win_rates, insider_trades
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -145,7 +146,7 @@ def run_forever() -> None:
 
     while True:
         try:
-            alerts, trades, win_rates = poll(wide=first_run)
+            alerts, trades, win_rates, _insider = poll(wide=first_run)
             first_run = False
 
             # Send daily digest once per day around 8 AM
@@ -190,6 +191,7 @@ def main() -> None:
 Examples:
   ./.venv/bin/python monitor.py               Run forever, polling every 4 hours
   ./.venv/bin/python monitor.py --once        Single poll, print alerts, exit
+  ./.venv/bin/python monitor.py --once --export   ...and rebuild the static dashboard
   ./.venv/bin/python monitor.py --summary     Send weekly digest email, exit
   ./.venv/bin/python monitor.py --monthly     Email the monthly "is this working?" review, exit
   ./.venv/bin/python monitor.py --performance Score past alerts against SPY, print, exit
@@ -215,6 +217,11 @@ Examples:
         "--performance",
         action="store_true",
         help="Score past alerts against SPY and print the performance summary, then exit",
+    )
+    parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Also rebuild the static dashboard (site/index.html) after the poll",
     )
     parser.add_argument(
         "--monthly",
@@ -255,23 +262,27 @@ Examples:
 
     if args.summary:
         _banner("Sending daily digest")
-        alerts, trades, _ = poll(wide=True)
+        alerts, trades, win_rates, insider = poll(wide=True)
         # Score any alerts whose forward window has now elapsed, so the weekly
         # email can report whether past signals actually beat SPY.
         history.score_all()
         performance = history.format_summary(history.performance_summary())
         send_summary(alerts, trades, performance)
         print("\n✓ Digest sent.")
+        if args.export:
+            export.build(alerts, trades, insider, win_rates)
 
     elif args.once:
         _banner("Single poll mode")
-        alerts, trades, win_rates = poll(wide=True)
+        alerts, trades, win_rates, insider = poll(wide=True)
         if not alerts:
             print("\n  No new alerts this cycle.")
         else:
             print(f"\n  {len(alerts)} alert(s), ranked by conviction:")
             for i, a in enumerate(alerts, 1):
                 print(f"\n  #{i} [{a.score:.0f}/100] {a.message}")
+        if args.export:
+            export.build(alerts, trades, insider, win_rates)
 
     else:
         run_forever()
