@@ -239,6 +239,41 @@ def compute_win_rates(trades: list[dict]) -> dict[str, dict]:
 
 # ── Alert detectors ───────────────────────────────────────────────────────────
 
+def alertable_trades(trades: list[dict]) -> list[dict]:
+    """
+    The subset of congressional trades allowed to become signals.
+
+    Two exclusions, both about intent. Sales are mostly tax-loss harvesting,
+    scheduled liquidations and diversification — a member selling says far less
+    about their view of a company than a member buying. And a member filing many
+    distinct tickers on one date is moving a portfolio, not making a call on any
+    of them; that pattern covers roughly three-quarters of the trade log and it
+    is not confined to sales.
+
+    Excluded trades are not discarded. They never enter the seen-state, so
+    history.record_control samples them into the control arm and they keep being
+    scored — which is what makes this decision reversible on evidence.
+    """
+    out = trades
+    if not config.ALERT_ON_SALES:
+        out = [t for t in out if t["type"] == "purchase"]
+
+    if config.REBALANCE_MIN_TICKERS:
+        # Counted over the full list, not the sales-filtered one: a member who
+        # sells ten tickers and buys three on the same day is rebalancing, and
+        # counting only the buys would let those three through.
+        per_day: dict[tuple, set] = defaultdict(set)
+        for t in trades:
+            per_day[(t["representative"], t["transaction_date"])].add(t["ticker"])
+        out = [
+            t for t in out
+            if len(per_day[(t["representative"], t["transaction_date"])])
+            < config.REBALANCE_MIN_TICKERS
+        ]
+
+    return out
+
+
 def detect_cluster_alerts(trades: list[dict]) -> list[Alert]:
     """
     🔴 Cluster Alert
@@ -789,7 +824,7 @@ def analyze_cross_cluster(
     Mirrors analyze() — reuses the same seen_trades.json / Gist state, no new file.
     Called by monitor.py on every poll cycle.
     """
-    raw = detect_cross_cluster_alerts(congress_trades, insider_trades)
+    raw = detect_cross_cluster_alerts(alertable_trades(congress_trades), insider_trades)
     if not raw:
         return []
 
@@ -820,16 +855,22 @@ def analyze(trades: list[dict]) -> list[Alert]:
         print("  No trades to analyze.")
         return []
 
+    # Drop what is not a signal before anything is detected. Win rates below
+    # still use the full list — that is a historical measure, not an alert.
+    alertable = alertable_trades(trades)
+    print(f"  {len(trades) - len(alertable)} of {len(trades)} trades excluded "
+          f"(sales / rebalancing), {len(alertable)} alert-eligible")
+
     # Filter to only new trades for watchlist + win-rate alerts
     # (cluster uses full list to detect patterns across time)
-    new_trades, seen = filter_new_trades(trades)
-    print(f"  {len(trades)} total trades, {len(new_trades)} new since last run")
+    new_trades, seen = filter_new_trades(alertable)
+    print(f"  {len(new_trades)} new since last run")
 
     # 🔴 Cluster — run on full trade list (needs historical context), then dedup
     # against seen state so the same cluster doesn't re-email every run.
     print("  Detecting cluster alerts...")
     cluster_alerts = []
-    for alert in detect_cluster_alerts(trades):
+    for alert in detect_cluster_alerts(alertable):
         key = _cluster_key(alert)
         if key not in seen:
             seen.add(key)

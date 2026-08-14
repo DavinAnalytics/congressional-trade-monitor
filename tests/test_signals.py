@@ -1271,3 +1271,61 @@ def test_signals_emailed_this_run_are_marked_new():
     fired = export.current_signals(trades, [], {}, fired=[])
     again = export.current_signals(trades, [], {}, fired=fired)
     assert any(s.meta["is_new"] for s in again)
+
+
+# ── Alert eligibility ─────────────────────────────────────────────────────────
+
+def test_sales_are_not_signals():
+    trades = [trade(ticker="NVDA", type="purchase"),
+              trade(ticker="AAPL", type="sale"),
+              trade(ticker="MSFT", type="sale_partial")]
+    out = analyzer.alertable_trades(trades)
+    assert [t["ticker"] for t in out] == ["NVDA"]
+
+
+def test_sales_return_when_the_switch_is_flipped(monkeypatch):
+    monkeypatch.setattr(config, "ALERT_ON_SALES", True)
+    monkeypatch.setattr(config, "REBALANCE_MIN_TICKERS", 0)
+    trades = [trade(ticker="NVDA", type="purchase"), trade(ticker="AAPL", type="sale")]
+    assert len(analyzer.alertable_trades(trades)) == 2
+
+
+def test_a_ticker_spray_on_one_day_is_rebalancing_not_a_view(monkeypatch):
+    monkeypatch.setattr(config, "REBALANCE_MIN_TICKERS", 4)
+    spray = [
+        trade(representative="Rep Spray", ticker=t, transaction_date="2026-07-01")
+        for t in ("AAA", "BBB", "CCC", "DDD", "EEE")
+    ]
+    single = trade(representative="Rep Focused", ticker="NVDA",
+                   transaction_date="2026-07-01")
+    out = analyzer.alertable_trades(spray + [single])
+    assert [t["ticker"] for t in out] == ["NVDA"]
+
+
+def test_rebalancing_counts_sales_toward_the_ticker_total(monkeypatch):
+    """A member who sells four tickers and buys one on the same day is moving a
+    portfolio; counting only the buy would let it through."""
+    monkeypatch.setattr(config, "REBALANCE_MIN_TICKERS", 4)
+    day = [trade(representative="Rep Mixed", ticker=t, type="sale",
+                 transaction_date="2026-07-01") for t in ("AAA", "BBB", "CCC")]
+    day.append(trade(representative="Rep Mixed", ticker="NVDA", type="purchase",
+                     transaction_date="2026-07-01"))
+    assert analyzer.alertable_trades(day) == []
+
+
+def test_a_members_separate_days_are_judged_separately(monkeypatch):
+    monkeypatch.setattr(config, "REBALANCE_MIN_TICKERS", 4)
+    trades = [
+        trade(representative="Rep A", ticker=t, transaction_date="2026-07-01")
+        for t in ("AAA", "BBB", "CCC", "DDD")
+    ] + [trade(representative="Rep A", ticker="NVDA", transaction_date="2026-07-02")]
+    assert [t["ticker"] for t in analyzer.alertable_trades(trades)] == ["NVDA"]
+
+
+def test_excluded_trades_stay_eligible_for_the_control_arm(stub_state):
+    """The point of excluding rather than deleting: history keeps scoring them,
+    so the decision can be reversed on evidence."""
+    stub_state[config.CONTROL_FILE] = []
+    sales = [trade(ticker="AAPL", type="sale", transaction_date="2026-07-01")]
+    assert analyzer.alertable_trades(sales) == []
+    assert history.record_control(sales, alerts=[], today=datetime(2026, 7, 2)) == 1

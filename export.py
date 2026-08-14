@@ -25,6 +25,7 @@ from analyzer import (
     disclosure_lag_days,
     find_cross_signals,
     enrich_and_score,
+    alertable_trades,
     detect_cluster_alerts,
     detect_winrate_alerts,
     detect_watchlist_alerts,
@@ -107,11 +108,12 @@ def current_signals(recent: list[dict], insider_trades: list[dict],
     pure — analyze() is what touches the seen-state — so re-running them here
     rebuilds the full picture without making the next real run go quiet.
     """
+    eligible = alertable_trades(recent)
     alerts = (
-        detect_cluster_alerts(recent)
-        + detect_winrate_alerts(recent, win_rates)
-        + detect_watchlist_alerts(recent)
-        + detect_cross_cluster_alerts(recent, insider_trades)
+        detect_cluster_alerts(eligible)
+        + detect_winrate_alerts(eligible, win_rates)
+        + detect_watchlist_alerts(eligible)
+        + detect_cross_cluster_alerts(eligible, insider_trades)
     )
     fired_sigs = {_signature(a) for a in fired}
     for a in alerts:

@@ -25,6 +25,27 @@ EMAIL_RECIPIENTS = [r.strip() for r in os.getenv("ALERT_EMAIL_RECIPIENTS", "").s
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
 
+# ── Alert Eligibility ─────────────────────────────────────────────────────────
+# Which congressional trades are allowed to become signals at all. Both filters
+# apply to alert detection only — win rates, the trade log and the control arm
+# still see every trade, so history keeps scoring what these exclude and the
+# monthly review can tell you whether excluding it was right.
+
+# Congressional sales are dominated by tax-loss harvesting, scheduled
+# liquidations and diversification, so they say little about a member's view of
+# the company. Set True to alert on them again.
+ALERT_ON_SALES = False
+
+# A member filing this many distinct tickers on one date is rebalancing a
+# portfolio, not expressing a view — the largest such filing observed is 294
+# tickers on a single day. Set to 0 to disable the filter.
+#
+# 8 rather than a tighter number: same-day filings cluster at 1-2, 4-6, 8 and
+# 31 tickers, so this keeps up to six same-day picks as plausibly deliberate
+# while dropping the mechanical blocks. Tightening to 4 leaves so few eligible
+# buys that the alert arm may never accumulate enough records to be judged.
+REBALANCE_MIN_TICKERS = 8
+
 # ── Alert Thresholds ──────────────────────────────────────────────────────────
 
 # 🔴 Cluster Alert

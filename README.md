@@ -21,14 +21,32 @@ Congress members are required by the STOCK Act (2012) to publicly disclose stock
 
 | Tier | Signal | Trigger |
 |------|--------|---------|
-| ⚡ Cluster Alert | 2+ members buy/sell same ticker within 45 days | Strongest congressional signal |
-| 🏆 Win-Rate Alert | Member with >60% historical win rate files new trade | Individual quality filter |
-| 👁️ Watchlist Alert | Specific named politician files anything | Manual tracking |
+| ⚡ Cluster Alert | 2+ members buy same ticker within 45 days | Strongest congressional signal |
+| 🏆 Win-Rate Alert | Member with >60% historical win rate files a new purchase | Individual quality filter |
+| 👁️ Watchlist Alert | Specific named politician buys | Manual tracking |
 | 🔗 Cross-Signal Alert | Same ticker bought by **both** Congress and a corporate insider within 45 days | Combined-conviction signal |
 
 All alerts from a run are sent as **one digest email**, ranked by a 0–100 conviction
 score so the strongest signal leads the subject line. The top-ranked alerts also carry
 a Gemini AI context block (see [AI-Powered Features](#ai-powered-features-gemini-25-flash)).
+
+### Alert eligibility
+
+`analyzer.alertable_trades()` decides what is even allowed to become a signal, and every
+detector runs on its output. Two exclusions, both about intent:
+
+| Filter | Config | Why |
+|---|---|---|
+| Sales | `ALERT_ON_SALES = False` | Congressional selling is dominated by tax-loss harvesting, scheduled liquidations and diversification. A member selling says far less about their view of a company than a member buying. |
+| Ticker sprays | `REBALANCE_MIN_TICKERS = 8` | A member filing 8+ distinct tickers on one date is moving a portfolio, not making a call. The largest single filing observed is **294 tickers on one day**; roughly three-quarters of the trade log sits in such blocks, and they are not confined to sales. Same-day filings cluster at 1–2, 4–6, 8 and 31 tickers, so 8 keeps up to six same-day picks as plausibly deliberate. |
+
+**Excluded is not deleted.** These trades never enter the seen-state, so `history.record_control`
+samples them into the control arm and keeps scoring them on the same horizons as real alerts.
+That is what makes the decision reversible on evidence rather than on taste — if the monthly
+review eventually shows the excluded arm outperforming, flip the constant back.
+
+Both filters apply to **alert detection only**. Win rates, the dashboard trade log and the
+control arm still see every trade.
 
 ### Conviction score
 
