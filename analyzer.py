@@ -203,9 +203,17 @@ def compute_win_rates(trades: list[dict]) -> dict[str, dict]:
     """
     print("  Computing win rates (this may take a minute — yfinance lookups)...")
 
+    # Rebalancing filings are excluded here too. A win rate built from them
+    # measures a diversified portfolio against SPY, which converges on a coin
+    # flip by construction — and because win_rates feeds the conviction score's
+    # track-record component, that noise would leak into how alerts are ranked.
+    # Direction is not filtered here: _score_trade already scores purchases only,
+    # and that must hold regardless of config.ALERT_ON_SALES.
+    scoreable = drop_rebalancing(trades)
+
     # Group trades by member
     by_member = defaultdict(list)
-    for t in trades:
+    for t in scoreable:
         by_member[t["representative"]].append(t)
 
     stats = {}
@@ -239,38 +247,47 @@ def compute_win_rates(trades: list[dict]) -> dict[str, dict]:
 
 # ── Alert detectors ───────────────────────────────────────────────────────────
 
+def drop_rebalancing(trades: list[dict]) -> list[dict]:
+    """
+    Remove trades filed on a member-day that looks like a portfolio move.
+
+    A member filing many distinct tickers on one date is moving a portfolio, not
+    making a call on any of them; that pattern covers roughly three-quarters of
+    the trade log, and it is not confined to sales.
+
+    Both directions count toward the day's ticker total, whatever the caller
+    intends to keep: a member who sells ten tickers and buys three on one date is
+    rebalancing, and counting only the buys would let those three through.
+    """
+    if not config.REBALANCE_MIN_TICKERS:
+        return list(trades)
+
+    per_day: dict[tuple, set] = defaultdict(set)
+    for t in trades:
+        per_day[(t["representative"], t["transaction_date"])].add(t["ticker"])
+
+    return [
+        t for t in trades
+        if len(per_day[(t["representative"], t["transaction_date"])])
+        < config.REBALANCE_MIN_TICKERS
+    ]
+
+
 def alertable_trades(trades: list[dict]) -> list[dict]:
     """
     The subset of congressional trades allowed to become signals.
 
-    Two exclusions, both about intent. Sales are mostly tax-loss harvesting,
-    scheduled liquidations and diversification — a member selling says far less
-    about their view of a company than a member buying. And a member filing many
-    distinct tickers on one date is moving a portfolio, not making a call on any
-    of them; that pattern covers roughly three-quarters of the trade log and it
-    is not confined to sales.
+    Rebalancing goes first, then sales — the latter because selling is dominated
+    by tax-loss harvesting, scheduled liquidations and diversification, so a
+    member selling says far less about their view of a company than one buying.
 
     Excluded trades are not discarded. They never enter the seen-state, so
     history.record_control samples them into the control arm and they keep being
     scored — which is what makes this decision reversible on evidence.
     """
-    out = trades
+    out = drop_rebalancing(trades)
     if not config.ALERT_ON_SALES:
         out = [t for t in out if t["type"] == "purchase"]
-
-    if config.REBALANCE_MIN_TICKERS:
-        # Counted over the full list, not the sales-filtered one: a member who
-        # sells ten tickers and buys three on the same day is rebalancing, and
-        # counting only the buys would let those three through.
-        per_day: dict[tuple, set] = defaultdict(set)
-        for t in trades:
-            per_day[(t["representative"], t["transaction_date"])].add(t["ticker"])
-        out = [
-            t for t in out
-            if len(per_day[(t["representative"], t["transaction_date"])])
-            < config.REBALANCE_MIN_TICKERS
-        ]
-
     return out
 
 

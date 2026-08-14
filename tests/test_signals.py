@@ -1329,3 +1329,30 @@ def test_excluded_trades_stay_eligible_for_the_control_arm(stub_state):
     sales = [trade(ticker="AAPL", type="sale", transaction_date="2026-07-01")]
     assert analyzer.alertable_trades(sales) == []
     assert history.record_control(sales, alerts=[], today=datetime(2026, 7, 2)) == 1
+
+
+def test_win_rates_ignore_rebalancing_filings(monkeypatch):
+    """A win rate built from portfolio moves measures a diversified basket
+    against SPY, and win_rates feeds the conviction score's track record."""
+    monkeypatch.setattr(config, "REBALANCE_MIN_TICKERS", 4)
+    monkeypatch.setattr(analyzer, "_score_trade", lambda t, w: True)
+
+    spray = [trade(representative="Rep Spray", ticker=t, transaction_date="2026-01-05")
+             for t in ("AAA", "BBB", "CCC", "DDD", "EEE")]
+    focused = [trade(representative="Rep Focused", ticker="NVDA",
+                     transaction_date="2026-01-05")]
+
+    stats = analyzer.compute_win_rates(spray + focused)
+    assert "Rep Spray" not in stats
+    assert stats["Rep Focused"]["total"] == 1
+
+
+def test_win_rates_still_score_purchases_only_when_sell_alerts_are_on(monkeypatch):
+    """ALERT_ON_SALES governs alerting, not scoring — _score_trade owns that."""
+    monkeypatch.setattr(config, "ALERT_ON_SALES", True)
+    monkeypatch.setattr(config, "REBALANCE_MIN_TICKERS", 0)
+    trades = [trade(ticker="NVDA", type="purchase", transaction_date="2026-01-05"),
+              trade(ticker="AAPL", type="sale", transaction_date="2026-01-06")]
+    monkeypatch.setattr(analyzer, "_score_trade",
+                        lambda t, w: True if t["type"] == "purchase" else None)
+    assert analyzer.compute_win_rates(trades)["Jane Doe"]["total"] == 1

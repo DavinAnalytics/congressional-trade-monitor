@@ -45,8 +45,18 @@ samples them into the control arm and keeps scoring them on the same horizons as
 That is what makes the decision reversible on evidence rather than on taste — if the monthly
 review eventually shows the excluded arm outperforming, flip the constant back.
 
-Both filters apply to **alert detection only**. Win rates, the dashboard trade log and the
-control arm still see every trade.
+The sales filter applies to **alert detection only**. The rebalancing filter also applies to
+`compute_win_rates` — a win rate built from portfolio moves measures a diversified basket
+against SPY, which converges on a coin flip by construction, and `win_rates` feeds the
+conviction score's track-record component, so that noise would leak into ranking. It cut the
+scoreable purchase pool from 911 to 354 and the leaderboard from 10 rows to 7. Alan Armstrong
+fell from 87/319 to below the floor, and John Boozman — previously the top entry at 67%
+(12/18) — dropped off once most of his scored purchases turned out to be rebalancing filings.
+Members who pick individual names (Gottheimer, Delaney, Taylor, Salazar) barely moved.
+
+Direction is deliberately **not** filtered in `compute_win_rates`: `_score_trade` already scores
+purchases only, and that must hold regardless of `ALERT_ON_SALES`. The dashboard trade log and
+the control arm still see every trade.
 
 ### Conviction score
 
