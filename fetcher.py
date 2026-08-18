@@ -16,6 +16,7 @@ All downstream modules use only this function.
 
 import re
 import io
+import time
 import requests
 import pdfplumber
 from bs4 import BeautifulSoup
@@ -35,6 +36,24 @@ HOUSE_PDF_BASE    = "https://disclosures-clerk.house.gov/"
 
 SENATE_FILING_LIMIT = 50   # max viewer pages to fetch per run
 HOUSE_PDF_LIMIT     = 200  # max PDFs to parse per run
+
+# senate.gov intermittently returns 403 to datacenter IPs — the GitHub Actions
+# runner sits in an Azure range and was blocked outright on 2026-08-18 while the
+# same requests succeeded from a residential connection. Retry, then degrade.
+FETCH_ATTEMPTS        = 3
+FETCH_BACKOFF_SECONDS = 5
+
+
+class ChamberFetchError(RuntimeError):
+    """
+    A chamber's disclosure feed could not be reached after retries.
+
+    Deliberately distinct from returning an empty list, for the same reason as
+    InsiderFetchError: "the feed is blocking us" and "nobody filed anything"
+    look identical downstream, and collapsing them turns an outage into a
+    falsely quiet market. Raised so fetch_all can drop one chamber and say so,
+    rather than taking the whole run down with it.
+    """
 
 HEADERS = {
     "User-Agent": (
@@ -210,10 +229,26 @@ def _parse_senate_viewer(
 def fetch_senate(days: int = RECENT_DAYS) -> list[dict]:
     """Fetch Senate PTR trades. Returns normalized trade dicts."""
     print("Fetching Senate data from efdsearch.senate.gov...")
-    session, csrf = _get_senate_session()
-    print("  ✓ Session established")
 
-    filings = _get_senate_filings(session, csrf)
+    last_error = None
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            session, csrf = _get_senate_session()
+            print("  ✓ Session established")
+            filings = _get_senate_filings(session, csrf)
+            break
+        except requests.RequestException as e:
+            last_error = e
+            if attempt < FETCH_ATTEMPTS:
+                wait = FETCH_BACKOFF_SECONDS * attempt
+                print(f"  ⚠ Senate eFD attempt {attempt}/{FETCH_ATTEMPTS} failed "
+                      f"({e}) — retrying in {wait}s")
+                time.sleep(wait)
+    else:
+        raise ChamberFetchError(
+            f"Senate eFD unreachable after {FETCH_ATTEMPTS} attempts: {last_error}"
+        )
+
     print(f"  ✓ {len(filings)} Senate PTR filings found")
 
     cutoff = datetime.now() - timedelta(days=days)
@@ -388,7 +423,22 @@ def fetch_house(days: int = RECENT_DAYS) -> list[dict]:
     all_filings = []
     for year in years:
         print(f"Fetching House PTR index for {year}...")
-        filings = _get_house_filings(year)
+        last_error = None
+        for attempt in range(1, FETCH_ATTEMPTS + 1):
+            try:
+                filings = _get_house_filings(year)
+                break
+            except requests.RequestException as e:
+                last_error = e
+                if attempt < FETCH_ATTEMPTS:
+                    wait = FETCH_BACKOFF_SECONDS * attempt
+                    print(f"  ⚠ House Clerk attempt {attempt}/{FETCH_ATTEMPTS} failed "
+                          f"({e}) — retrying in {wait}s")
+                    time.sleep(wait)
+        else:
+            raise ChamberFetchError(
+                f"House Clerk unreachable after {FETCH_ATTEMPTS} attempts: {last_error}"
+            )
         print(f"  ✓ {len(filings)} PTR filings found")
         all_filings.extend(filings)
 
@@ -420,17 +470,44 @@ def fetch_house(days: int = RECENT_DAYS) -> list[dict]:
 
 # ── Unified entry point ───────────────────────────────────────────────────────
 
-def fetch_all(days: int = RECENT_DAYS) -> list[dict]:
+def fetch_all(days: int = RECENT_DAYS,
+              warnings: list[str] | None = None) -> list[dict]:
     """
     Fetch both chambers. Returns unified sorted list of trade dicts.
     This is the only function analyzer.py needs to call.
+
+    One chamber going dark degrades rather than crashes: senate.gov started
+    403ing the CI runner while the House Clerk kept working, and losing the
+    Senate is no reason to lose the House trades, the insider feed, the digest
+    and the dashboard along with it. Any degradation is appended to `warnings`
+    so the digest can say the picture is partial — a thin digest must never be
+    mistaken for a quiet market.
     """
-    senate_trades = fetch_senate(days)
-    house_trades  = fetch_house(days)
-    all_trades    = senate_trades + house_trades
+    if warnings is None:
+        warnings = []
+
+    all_trades, failed = [], []
+    for chamber, fetch in (("Senate", fetch_senate), ("House", fetch_house)):
+        try:
+            all_trades += fetch(days)
+        except ChamberFetchError as e:
+            failed.append(chamber)
+            print(f"  ⚠ {e}")
+            print(f"  ⚠ {chamber.upper()} DISCLOSURES MISSING FROM THIS RUN")
+            warnings.append(
+                f"{chamber} disclosures unavailable this run — that feed refused "
+                f"the request, so no {chamber} trades were seen. Everything below "
+                f"covers the other chamber only."
+            )
+
+    if len(failed) == 2:
+        raise ChamberFetchError(
+            "Both chambers unreachable — no congressional data to analyze"
+        )
+
     all_trades.sort(key=lambda t: t["transaction_date"], reverse=True)
-    print(f"\n✓ Total: {len(all_trades)} trades across both chambers "
-          f"(last {days} days)")
+    scope = "both chambers" if not failed else f"{failed[0]} missing"
+    print(f"\n✓ Total: {len(all_trades)} trades ({scope}, last {days} days)")
     return all_trades
 
 

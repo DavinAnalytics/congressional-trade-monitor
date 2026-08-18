@@ -20,6 +20,8 @@ from xml.etree import ElementTree as ET
 
 import analyzer
 import committees
+import fetcher
+import requests
 import config
 import export
 import history
@@ -1356,3 +1358,71 @@ def test_win_rates_still_score_purchases_only_when_sell_alerts_are_on(monkeypatc
     monkeypatch.setattr(analyzer, "_score_trade",
                         lambda t, w: True if t["type"] == "purchase" else None)
     assert analyzer.compute_win_rates(trades)["Jane Doe"]["total"] == 1
+
+
+# ── Feed outages ──────────────────────────────────────────────────────────────
+
+def _http_403():
+    resp = requests.Response()
+    resp.status_code = 403
+    return requests.HTTPError("403 Client Error: Forbidden", response=resp)
+
+
+def test_senate_403_retries_then_raises_typed_error(monkeypatch):
+    """Reproduces 2026-08-18: senate.gov 403'd the CI runner. It must surface as
+    ChamberFetchError, not a bare HTTPError that kills the process."""
+    calls = []
+    monkeypatch.setattr(fetcher, "FETCH_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(fetcher.time, "sleep", lambda s: None)
+
+    def boom():
+        calls.append(1)
+        raise _http_403()
+    monkeypatch.setattr(fetcher, "_get_senate_session", boom)
+
+    with pytest.raises(fetcher.ChamberFetchError):
+        fetcher.fetch_senate(days=45)
+    assert len(calls) == fetcher.FETCH_ATTEMPTS
+
+
+def test_a_transient_failure_is_retried_not_fatal(monkeypatch):
+    monkeypatch.setattr(fetcher, "FETCH_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(fetcher.time, "sleep", lambda s: None)
+
+    attempts = {"n": 0}
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise _http_403()
+        return ("session", "csrf")
+    monkeypatch.setattr(fetcher, "_get_senate_session", flaky)
+    monkeypatch.setattr(fetcher, "_get_senate_filings", lambda s, c: [])
+
+    assert fetcher.fetch_senate(days=45) == []
+    assert attempts["n"] == 2
+
+
+def test_one_dead_chamber_degrades_and_warns(monkeypatch):
+    """The House trades, insider feed, digest and dashboard must survive the
+    Senate going dark — losing one chamber is not a reason to lose the run."""
+    house = [trade(chamber="House", ticker="NVDA")]
+    monkeypatch.setattr(fetcher, "fetch_senate",
+                        lambda days: (_ for _ in ()).throw(
+                            fetcher.ChamberFetchError("Senate eFD unreachable")))
+    monkeypatch.setattr(fetcher, "fetch_house", lambda days: house)
+
+    warnings = []
+    out = fetcher.fetch_all(days=45, warnings=warnings)
+    assert [t["ticker"] for t in out] == ["NVDA"]
+    assert len(warnings) == 1 and "Senate disclosures unavailable" in warnings[0]
+
+
+def test_both_chambers_dead_is_still_an_error(monkeypatch):
+    """Degrading to zero congressional data is not a quiet market."""
+    def dead(days):
+        raise fetcher.ChamberFetchError("unreachable")
+    monkeypatch.setattr(fetcher, "fetch_senate", dead)
+    monkeypatch.setattr(fetcher, "fetch_house", dead)
+
+    with pytest.raises(fetcher.ChamberFetchError):
+        fetcher.fetch_all(days=45, warnings=[])

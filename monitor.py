@@ -62,7 +62,10 @@ def poll(wide: bool = False) -> tuple[list, list, dict, list]:
     # Fetch — use wider window on first run or when wide=True
     fetch_days = 180 if wide else config.FETCH_DAYS
     print(f"\nFetching trades (last {fetch_days} days)...")
-    all_trades = fetch_all(days=fetch_days)
+    # Collected here rather than at the insider fetch below: a chamber can go
+    # dark too, and the digest has to say so.
+    warnings: list[str] = []
+    all_trades = fetch_all(days=fetch_days, warnings=warnings)
 
     # For alerts, only look at the recent window
     if wide:
@@ -80,7 +83,6 @@ def poll(wide: bool = False) -> tuple[list, list, dict, list]:
     # on with the congressional alerts, but say plainly that cross-signals could
     # not run this cycle.
     print("\nFetching insider buys...")
-    warnings = []
     try:
         insider_trades = fetch_insider(days=config.FETCH_DAYS)
     except InsiderFetchError as e:

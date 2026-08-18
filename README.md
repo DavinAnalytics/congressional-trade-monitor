@@ -385,6 +385,23 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
 
 **Feed resilience.** openinsider is a single unauthenticated endpoint and does time out in practice. Each page retries `FETCH_ATTEMPTS` (3) times with linear backoff. If page 1 fails outright it raises `InsiderFetchError` rather than returning an empty list; if a *later* page fails, the rows already collected are kept, since a partial outage should not cost the whole run.
 
+### Chamber feed outages
+
+`fetch_all` degrades to one chamber rather than crashing. On 2026-08-18 senate.gov began
+returning `403 Forbidden` to the GitHub Actions runner — the same requests succeeded from a
+residential connection, so it is datacenter-IP blocking, not a broken scraper. The unhandled
+`HTTPError` took the whole run down: House trades, the insider feed, the digest and the
+dashboard were all lost to a Senate outage.
+
+Both chamber index fetches now retry `FETCH_ATTEMPTS` times with linear backoff and raise
+`ChamberFetchError` on exhaustion. `fetch_all` catches it per chamber, appends a warning that
+travels into the digest, and continues. Losing **both** chambers still raises — no
+congressional data at all is an outage, not a quiet market.
+
+Senate committee assignments come from a separate senate.gov page that 403s under the same
+conditions. That path already degraded gracefully (a printed warning); the effect is that
+senators temporarily lose committee-conflict flags while House members keep theirs.
+
 That distinction matters: "the feed is down" makes cross-signals impossible, while "no insiders bought anything" is a real market observation, and collapsing the two silently switches off the strongest signal in the monitor. Callers degrade rather than crash — `monitor.poll()` continues with congressional alerts and prints `CROSS-SIGNAL DETECTION DISABLED FOR THIS RUN`, passing a warning banner into the digest email so a thin digest is never mistaken for a quiet market; the dashboard shows `st.warning` and renders its remaining panels.
 
 **Noise filtering at the scraper boundary** (so analyzer, notifier, and dashboard all receive a clean list):
