@@ -1,6 +1,6 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
-**Status:** ✅ Complete — all modules built, 96 unit tests passing  
+**Status:** ✅ Complete — all modules built, 118 unit tests passing  
 **Live dashboard:** GitHub Pages (rebuilt daily) · Streamlit: https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends one ranked email digest on schedule, tracks whether its own alerts actually beat the market, and provides a visual dashboard for exploratory analysis.
