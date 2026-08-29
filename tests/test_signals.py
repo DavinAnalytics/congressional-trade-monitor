@@ -1699,3 +1699,49 @@ def test_a_keyword_still_matches_as_a_whole_phrase(monkeypatch):
 
     conflicts = committees.flag_conflicts("Some Member", "T")
     assert any("Telecommunications and Media" in c for c in conflicts)
+
+
+def test_an_artificial_intelligence_panel_is_not_defense_intelligence(monkeypatch):
+    """"Intelligence" has to reach Defense Intelligence without also reaching
+    every AI subcommittee. Whole-word matching cannot separate these two — the
+    word is genuinely there — so the phrase is stripped before matching."""
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "House", "committees": ["Financial Services"],
+        "subcommittees": ["Digital Assets, Financial Technology, and Artificial Intelligence"]})
+    _industries(monkeypatch, {"LMT": "Aerospace & Defense"})
+
+    assert committees.flag_conflicts("Josh Gottheimer", "LMT") == []
+
+
+def test_a_real_intelligence_assignment_still_flags_defense(monkeypatch):
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "House", "committees": ["Armed Services"],
+        "subcommittees": ["Intelligence and Special Operations"]})
+    _industries(monkeypatch, {"LMT": "Aerospace & Defense"})
+
+    conflicts = committees.flag_conflicts("Gilbert Cisneros", "LMT")
+    assert any("Intelligence and Special Operations" in c for c in conflicts)
+
+
+def test_financial_consumer_protection_does_not_oversee_tech(monkeypatch):
+    """Senate Banking's consumer subcommittee is about consumer *finance*. It
+    was flagging every tech holding its members touched."""
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "Senate", "committees": ["Banking, Housing, and Urban Affairs"],
+        "subcommittees": ["Financial Institutions and Consumer Protection"]})
+    _industries(monkeypatch, {"PLTR": "Software - Infrastructure"})
+
+    assert committees.flag_conflicts("John Boozman", "PLTR") == []
+
+
+def test_the_tech_consumer_subcommittee_still_flags_tech(monkeypatch):
+    """Dropping the bare "Consumer Protection" keyword must not cost the
+    Commerce subcommittee it was meant to catch — "Technology" and "Data
+    Privacy" already reach it."""
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "Senate", "committees": ["Commerce, Science, and Transportation"],
+        "subcommittees": ["Consumer Protection, Technology, and Data Privacy"]})
+    _industries(monkeypatch, {"PLTR": "Software - Infrastructure"})
+
+    conflicts = committees.flag_conflicts("Some Senator", "PLTR")
+    assert any("Consumer Protection, Technology, and Data Privacy" in c for c in conflicts)

@@ -298,18 +298,26 @@ SECTOR_TICKERS = {
 # per ticker never seen before, and nothing for one already known.
 SECTOR_CACHE_FILE = "ticker_sectors.json"
 
+# Phrases where a keyword means something else entirely. Removed from an
+# assignment name before matching, so "Intelligence" reaches Defense Intelligence
+# and the Open Source Intelligence subcommittee without also reaching every
+# Artificial Intelligence panel. Same class of error as "Technology" matching
+# inside "Biotechnology", which whole-word matching already handles.
+AMBIGUOUS_PHRASES = [
+    "Artificial Intelligence",
+]
+
 # Maps committee/subcommittee keywords to the sectors they oversee
 # Used for fuzzy matching against member's actual committee assignments
 COMMITTEE_SECTORS = {
     "Semiconductors": [
         "International Trade",
         "Commerce, Science",
-        "Science and Technology",
+        "Science, Space, and Technology",
+        "Research and Technology",
         "Strategic Competition",
         "Emerging Threats",
         "Manufacturing",
-        "Export",
-        "Technology",
     ],
     "Defense": [
         "Armed Services",
@@ -324,10 +332,7 @@ COMMITTEE_SECTORS = {
     "Healthcare": [
         "Health",
         "Labor, Health",
-        "Medicare",
-        "Medicaid",
         "Aging",
-        "Pharmaceutical",
     ],
     "Energy": [
         "Energy",
@@ -348,10 +353,9 @@ COMMITTEE_SECTORS = {
     ],
     "Tech": [
         "Commerce, Science",
-        "Science and Technology",
+        "Science, Space, and Technology",
         "Technology",
         "Communications",
-        "Consumer Protection",
         "Data Privacy",
         "Telecommunications",
     ],
@@ -359,7 +363,6 @@ COMMITTEE_SECTORS = {
         "Commerce, Science",
         "Telecommunications",
         "Communications",
-        "Technology",
     ],
     "Agriculture": [
         "Agriculture",
@@ -370,7 +373,6 @@ COMMITTEE_SECTORS = {
     ],
     "Transportation": [
         "Transportation",
-        "Infrastructure",
         "Aviation",
         "Railroads",
         "Highways",
@@ -378,14 +380,11 @@ COMMITTEE_SECTORS = {
     "Pharma": [
         "Health",
         "Labor, Health",
-        "Pharmaceutical",
         "Aging",
-        "Medicare",
     ],
     "Mining": [
         "Natural Resources",
         "Interior",
-        "Energy and Commerce",
         "Public Lands",
         "Mining",
     ],
@@ -393,7 +392,7 @@ COMMITTEE_SECTORS = {
         "Banking",
         "Financial Services",
         "Digital Assets",
-        "Agriculture",  # CFTC oversight of crypto derivatives
+        "Commodity Markets",  # CFTC oversight of crypto derivatives
         "Securities",
     ],
 }

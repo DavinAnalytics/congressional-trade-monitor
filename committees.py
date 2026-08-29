@@ -336,12 +336,18 @@ def flag_conflicts(name: str, ticker: str) -> list[str]:
     # Find committee overlaps with that sector
     conflicts = []
     for assignment in all_assignments:
+        # Match against the name with ambiguous phrases removed, but report the
+        # assignment as it is actually called.
+        haystack = assignment
+        for phrase in config.AMBIGUOUS_PHRASES:
+            haystack = re.sub(re.escape(phrase), " ", haystack, flags=re.I)
+
         for rel_comm in config.COMMITTEE_SECTORS.get(sector, []):
             # Require the keyword as whole words, not as a substring. Plain
             # containment matched "Technology" inside "Biotechnology", which
             # flagged an agriculture subcommittee as overseeing every tech
             # holding its members touched.
-            if re.search(rf"\b{re.escape(rel_comm)}\b", assignment, re.I):
+            if re.search(rf"\b{re.escape(rel_comm)}\b", haystack, re.I):
                 conflict_str = (
                     f"{assignment} "
                     f"(oversees {sector} sector — {ticker})"

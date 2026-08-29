@@ -1,6 +1,6 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
-**Status:** ✅ Complete — all modules built, 141 unit tests passing  
+**Status:** ✅ Complete — all modules built, 145 unit tests passing  
 **Live dashboard:** GitHub Pages (rebuilt daily) · Streamlit: https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends one ranked email digest on schedule, tracks whether its own alerts actually beat the market, and provides a visual dashboard for exploratory analysis.
@@ -414,6 +414,33 @@ oversee every tech holding its members touched — 15 false flags across the log
 one senator. Whole-word matching removes those while keeping real phrase hits like
 `"Telecommunications and Media"`.
 
+**The keywords themselves were audited against the roster**, by listing every assignment name
+each one actually matches across all 506 members rather than reasoning about what they ought to
+catch. That turned up two kinds of rot:
+
+*Keywords matching nothing.* `"Science and Technology"` (the committee is called *Science, Space,
+and Technology*), `"Export"`, `"Medicare"`, `"Medicaid"` and `"Pharmaceutical"` matched zero
+assignments — dead entries that read as coverage.
+
+*Keywords matching far too much.* `"Consumer Protection"` reached Senate Banking's *Financial
+Institutions and Consumer Protection*, flagging consumer **finance** oversight as tech oversight;
+the Commerce subcommittee it was meant to catch already matches on `"Technology"` and `"Data
+Privacy"`, so dropping it costs nothing. `"Technology"` alone spanned 147 member-slots including
+*Emergency Management and Technology*, too wide for Semiconductors or Telecom. `"Agriculture"`
+put all 123 of that committee's slots under Crypto when the CFTC nexus is one subcommittee,
+*Commodity Markets*. `"Infrastructure"`, `"Energy and Commerce"` under Mining, and the rest are
+listed in `COMMITTEE_SECTORS`.
+
+`AMBIGUOUS_PHRASES` handles the one case whole-word matching cannot. `"Intelligence"` must reach
+*Defense Intelligence and Overhead Architecture* but not *Digital Assets, Financial Technology,
+and Artificial Intelligence* — the word is genuinely present in both, so the phrase is removed
+from the assignment name before matching and the name is still reported as it is actually called.
+
+Together these cut flagged deliberate purchases from 67 to **49** while every legitimate flag
+survives: SpaceX still flags Armed Services for Cisneros and McGuire, Whitehouse still flags
+Semiconductors on MU, Gottheimer still flags Tech on MSFT and — via his real intelligence
+assignments rather than the AI panel — Defense on LMT.
+
 **Committee names come from the XML, not a lookup table.** `MemberData.xml` carries a `<committees>` block defining every code it later references, so both committee and subcommittee names are parsed from the same document as the assignments and cannot drift out of sync with them. An earlier hand-written code→name map had `FA00` as Financial Services (it is Foreign Affairs) and `SO00` as Intelligence (it is Ethics), and was missing `SM00`, `ZS00` and `QJ00` entirely — which both showed raw codes in the UI and produced false Financial Services conflict flags for all 54 Foreign Affairs members. Subcommittees now resolve to real names too, so they can actually match the sector keywords in `config.COMMITTEE_SECTORS`; previously they were stored as codes like `FA05` and could never match anything.
 
 **Name format fix:** Trade disclosures return names as `"Last, First Middle"` (e.g. `"Taylor, David J."`) while the committee cache keys names as `"First Last"`. `get_member_committees()` detects the comma-separated format and retries with both `"First Middle Last"` and `"First Last"` (dropping the middle initial), dramatically improving committee coverage. `display_name()` applies the same flip for presentation so the House and Senate feeds do not show two naming conventions side by side; it leaves suffix commas (`"A. Mitchell McConnell, Jr."`) alone. Display only — dedup keys and history records keep the raw name, so normalizing cannot re-fire old alerts.
@@ -611,7 +638,7 @@ sold it, so that signal was wrong so far — the same percentage would be a ✓ 
 ./.venv/bin/pytest tests/
 ```
 
-141 tests, no network — yfinance and the Gist are monkeypatched out, so the suite runs offline and deterministically. Coverage is deliberately concentrated on the logic that is easy to get quietly wrong rather than on plumbing:
+145 tests, no network — yfinance and the Gist are monkeypatched out, so the suite runs offline and deterministically. Coverage is deliberately concentrated on the logic that is easy to get quietly wrong rather than on plumbing:
 
 | Area | What it pins |
 |------|--------------|
@@ -629,7 +656,7 @@ sold it, so that signal was wrong so far — the same percentage would be a ✓ 
 | House owner codes | That `SP`/`DC`/`JT` map to the Senate's words, a bare row is the filer's own, and an asset name starting with those letters is not misread |
 | New-listing guard | That an IPO-week cluster is suppressed, a long-listed one is not, and an unavailable price feed fails open rather than silencing alerts |
 | Sector resolution | That industry drives the sector, an override beats it, funds and unmapped industries resolve to nothing, and a ticker is looked up only once |
-| Conflict keywords | That a keyword cannot match inside a longer word, and that whole phrases still match |
+| Conflict keywords | That a keyword cannot match inside a longer word, that whole phrases still match, that an AI panel is not defense intelligence, and that consumer *finance* oversight is not tech oversight |
 
 ---
 
