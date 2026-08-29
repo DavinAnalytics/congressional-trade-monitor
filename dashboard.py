@@ -29,6 +29,7 @@ from fetcher import fetch_all
 from openinsider_fetcher import fetch_all as fetch_insider, InsiderFetchError
 from analyzer import (
     compute_win_rates,
+    sector_map,
     detect_cluster_alerts,
     detect_winrate_alerts,
     detect_watchlist_alerts,
@@ -264,11 +265,11 @@ def _render_summary(trades: list[dict]):
 
     # ── Sector heat ───────────────────────────────────────────────────────────
     sector_net: dict[str, float] = {}
+    sectors = sector_map(net_dollars.keys())
     for ticker, net in net_dollars.items():
-        for sector, tickers in config.SECTOR_TICKERS.items():
-            if ticker.upper() in [t.upper() for t in tickers]:
-                sector_net[sector] = sector_net.get(sector, 0) + net
-                break
+        sector = sectors.get(ticker.upper())
+        if sector:
+            sector_net[sector] = sector_net.get(sector, 0) + net
 
     st.subheader("📊 Activity Summary", divider="gray")
 

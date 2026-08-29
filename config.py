@@ -51,6 +51,7 @@ REBALANCE_MIN_TICKERS = 8
 # 🔴 Cluster Alert
 CLUSTER_MIN_MEMBERS = 2    # members needed to trigger
 CLUSTER_DAYS        = 45   # rolling window in days
+NEW_LISTING_DAYS    = 30   # a ticker younger than this cannot form a cluster
 
 # 🟡 Win-Rate Alert
 WIN_RATE_MIN        = 0.60  # 60% minimum win rate
@@ -183,20 +184,119 @@ CLUSTER_EXCLUDE_TICKERS = {
 
 # ── Committee Conflict Detection ──────────────────────────────────────────────
 
-# Maps sectors to the tickers that belong to them
-SECTOR_TICKERS = {
-    "Semiconductors":   ["NVDA", "AMD", "INTC", "TSM", "AVGO", "QCOM", "MU", "AMAT", "LRCX", "KLAC"],
-    "Defense":          ["LMT", "RTX", "NOC", "GD", "BA", "HII", "L3H", "LDOS", "CACI", "SAIC"],
-    "Healthcare":       ["UNH", "JNJ", "PFE", "ABBV", "CVS", "MCK", "CI", "HCA", "TMO", "ABT"],
-    "Energy":           ["XOM", "CVX", "BP", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY"],
-    "Finance":          ["JPM", "BAC", "GS", "MS", "WFC", "C", "AXP", "BLK", "SCHW", "COF"],
-    "Tech":             ["AAPL", "MSFT", "GOOGL", "META", "AMZN", "CRM", "ORCL", "IBM", "CSCO", "ADBE"],
-    "Telecom":          ["T", "VZ", "TMUS", "CMCSA", "CHTR", "DISH"],
-    "Agriculture":      ["ADM", "BG", "MOS", "CF", "FMC", "DE", "CTVA"],
-    "Transportation":   ["UNP", "CSX", "NSC", "UPS", "FDX", "DAL", "UAL", "LUV"],
-    "Pharma":           ["LLY", "MRK", "BMY", "GILD", "BIIB", "AMGN", "REGN", "VRTX"],
-    "Crypto":           ["IBIT", "FBTC", "GBTC", "ETHA", "ARKB", "BTCO", "COIN", "MSTR", "MARA", "RIOT", "CLSK", "HUT"],
+# Maps a market industry to the sector whose committees oversee it.
+#
+# Keyed on industry, not ticker, on purpose. A ticker list is unbounded and goes
+# stale: the hand-maintained one this replaced covered 101 tickers against 631
+# actually traded (12.8%), listed "L3H" — not a real ticker, L3Harris is LHX —
+# still carried the delisted DISH, and held GOOGL but not GOOG, so the same
+# company flagged a conflict under one share class and not the other. The
+# industry taxonomy is bounded and stable, so this table stops rotting the day
+# it is written. Industries with no real committee oversight are deliberately
+# absent: no sector means no flag, which is the honest answer.
+INDUSTRY_SECTORS = {
+    "Semiconductors":                          "Semiconductors",
+    "Semiconductor Equipment & Materials":     "Semiconductors",
+
+    "Aerospace & Defense":                     "Defense",
+
+    "Software - Infrastructure":               "Tech",
+    "Software - Application":                  "Tech",
+    "Information Technology Services":         "Tech",
+    "Computer Hardware":                       "Tech",
+    "Consumer Electronics":                    "Tech",
+    "Electronic Components":                   "Tech",
+    "Scientific & Technical Instruments":      "Tech",
+    "Internet Content & Information":          "Tech",
+    "Internet Retail":                         "Tech",
+    "Electronic Gaming & Multimedia":          "Tech",
+
+    "Telecom Services":                        "Telecom",
+    "Communication Equipment":                 "Telecom",
+    "Entertainment":                           "Telecom",
+    "Advertising Agencies":                    "Telecom",
+    "Publishing":                              "Telecom",
+
+    "Healthcare Plans":                        "Healthcare",
+    "Medical Devices":                         "Healthcare",
+    "Medical Instruments & Supplies":          "Healthcare",
+    "Medical Care Facilities":                 "Healthcare",
+    "Medical Distribution":                    "Healthcare",
+    "Diagnostics & Research":                  "Healthcare",
+    "Health Information Services":             "Healthcare",
+
+    "Drug Manufacturers - General":            "Pharma",
+    "Drug Manufacturers - Specialty & Generic": "Pharma",
+    "Biotechnology":                           "Pharma",
+
+    "Oil & Gas Integrated":                    "Energy",
+    "Oil & Gas E&P":                           "Energy",
+    "Oil & Gas Midstream":                     "Energy",
+    "Oil & Gas Refining & Marketing":          "Energy",
+    "Oil & Gas Equipment & Services":          "Energy",
+    "Uranium":                                 "Energy",
+    "Thermal Coal":                            "Energy",
+    "Solar":                                   "Energy",
+    "Utilities - Regulated Electric":          "Energy",
+    "Utilities - Regulated Gas":               "Energy",
+    "Utilities - Regulated Water":             "Energy",
+    "Utilities - Renewable":                   "Energy",
+    "Utilities - Independent Power Producers": "Energy",
+
+    "Banks - Diversified":                     "Finance",
+    "Banks - Regional":                        "Finance",
+    "Capital Markets":                         "Finance",
+    "Financial Data & Stock Exchanges":        "Finance",
+    "Asset Management":                        "Finance",
+    "Credit Services":                         "Finance",
+    "Financial Conglomerates":                 "Finance",
+    "Insurance - Diversified":                 "Finance",
+    "Insurance - Life":                        "Finance",
+    "Insurance - Property & Casualty":         "Finance",
+    "Insurance - Reinsurance":                 "Finance",
+    "Insurance Brokers":                       "Finance",
+
+    "Agricultural Inputs":                     "Agriculture",
+    "Farm Products":                           "Agriculture",
+    "Farm & Heavy Construction Machinery":     "Agriculture",
+    "Food Distribution":                       "Agriculture",
+    "Packaged Foods":                          "Agriculture",
+
+    "Railroads":                               "Transportation",
+    "Airlines":                                "Transportation",
+    "Integrated Freight & Logistics":          "Transportation",
+    "Marine Shipping":                         "Transportation",
+    "Trucking":                                "Transportation",
+
+    "Gold":                                    "Mining",
+    "Silver":                                  "Mining",
+    "Copper":                                  "Mining",
+    "Aluminum":                                "Mining",
+    "Steel":                                   "Mining",
+    "Coking Coal":                             "Mining",
+    "Other Industrial Metals & Mining":        "Mining",
+    "Other Precious Metals & Mining":          "Mining",
 }
+
+# Tickers whose sector the industry taxonomy cannot supply. Funds carry no
+# industry at all, and a few operating companies file under an industry that
+# hides what they actually are — MSTR is "Software", COIN is "Capital Markets".
+# Checked before INDUSTRY_SECTORS, so an entry here always wins. Deliberately
+# short: this is the exception list, not the map.
+SECTOR_TICKERS = {
+    "Crypto":         ["IBIT", "FBTC", "GBTC", "ETHA", "ARKB", "BTCO",
+                       "COIN", "MSTR", "MARA", "RIOT", "CLSK", "HUT"],
+    "Mining":         ["GLD", "IAU", "GLDM", "SGOL", "OUNZ", "PHYS",
+                       "SLV", "SIVR", "PSLV", "PPLT", "PALL",
+                       "GDX", "GDXJ", "SIL", "LITP"],
+    "Energy":         ["USO", "USOU", "UNG", "XLE", "TPYP", "URA"],
+    "Semiconductors": ["SMH", "SOXX"],
+    "Tech":           ["IGV"],
+}
+
+# Ticker → industry lookups are cached here so a run costs one yfinance call
+# per ticker never seen before, and nothing for one already known.
+SECTOR_CACHE_FILE = "ticker_sectors.json"
 
 # Maps committee/subcommittee keywords to the sectors they oversee
 # Used for fuzzy matching against member's actual committee assignments
@@ -281,6 +381,13 @@ COMMITTEE_SECTORS = {
         "Pharmaceutical",
         "Aging",
         "Medicare",
+    ],
+    "Mining": [
+        "Natural Resources",
+        "Interior",
+        "Energy and Commerce",
+        "Public Lands",
+        "Mining",
     ],
     "Crypto": [
         "Banking",

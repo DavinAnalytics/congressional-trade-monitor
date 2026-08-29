@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from xml.etree import ElementTree as ET
 
 import config
+import analyzer
 
 HEADERS = {
     "User-Agent": (
@@ -328,30 +329,25 @@ def flag_conflicts(name: str, ticker: str) -> list[str]:
         member_data.get("subcommittees", [])
     )
 
-    # Find which sectors this ticker belongs to
-    ticker_sectors = []
-    for sector, tickers in config.SECTOR_TICKERS.items():
-        if ticker.upper() in [t.upper() for t in tickers]:
-            ticker_sectors.append(sector)
-
-    if not ticker_sectors:
+    sector = analyzer.sector_of(ticker)
+    if not sector:
         return []
 
-    # Find committee overlaps with those sectors
+    # Find committee overlaps with that sector
     conflicts = []
     for assignment in all_assignments:
-        assignment_lower = assignment.lower()
-        for sector in ticker_sectors:
-            relevant_committees = config.COMMITTEE_SECTORS.get(sector, [])
-            for rel_comm in relevant_committees:
-                # Require the full keyword phrase to appear in the assignment
-                if rel_comm.lower() in assignment_lower:
-                    conflict_str = (
-                        f"{assignment} "
-                        f"(oversees {sector} sector — {ticker})"
-                    )
-                    if conflict_str not in conflicts:
-                        conflicts.append(conflict_str)
+        for rel_comm in config.COMMITTEE_SECTORS.get(sector, []):
+            # Require the keyword as whole words, not as a substring. Plain
+            # containment matched "Technology" inside "Biotechnology", which
+            # flagged an agriculture subcommittee as overseeing every tech
+            # holding its members touched.
+            if re.search(rf"\b{re.escape(rel_comm)}\b", assignment, re.I):
+                conflict_str = (
+                    f"{assignment} "
+                    f"(oversees {sector} sector — {ticker})"
+                )
+                if conflict_str not in conflicts:
+                    conflicts.append(conflict_str)
 
     return conflicts
 

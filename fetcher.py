@@ -37,6 +37,17 @@ HOUSE_PDF_BASE    = "https://disclosures-clerk.house.gov/"
 SENATE_FILING_LIMIT = 50   # max viewer pages to fetch per run
 HOUSE_PDF_LIMIT     = 200  # max PDFs to parse per run
 
+# House PTR asset-type tags worth keeping. "OT" is the form's catch-all "other
+# securities" bucket, and it is the only place a House ETF appears — there is no
+# ETF tag on the form. Bonds ("GS", "CS") and private holdings ("PS", "OI") stay
+# out: they have no tradeable ticker to price.
+HOUSE_ASSET_TYPES = {"ST": "stock", "OP": "option", "OT": "other"}
+
+# House PTR owner codes, mapped to the vocabulary the Senate viewer already
+# emits so both chambers read the same downstream. The House form leaves the
+# column blank for the filer's own holdings, which is what "Self" means there.
+HOUSE_OWNERS = {"SP": "Spouse", "DC": "Child", "JT": "Joint"}
+
 # senate.gov intermittently returns 403 to datacenter IPs — the GitHub Actions
 # runner sits in an Azure range and was blocked outright on 2026-08-18 while the
 # same requests succeeded from a residential connection. Retry, then degrade.
@@ -324,10 +335,11 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
 
     lines = full_text.splitlines()
 
-    # Asset type tag "[ST]" (stock) or "[OP]" (option), with the ticker "(XXXX)"
-    # just before it. The asset cell usually wraps, so the tag, ticker, and the
+    # Asset type tag "[ST]" (stock), "[OP]" (option) or "[OT]" (other securities,
+    # which is where the House form files ETFs), with the ticker "(XXXX)" just
+    # before it. The asset cell usually wraps, so the tag, ticker, and the
     # type/date/amount columns land on two adjacent lines in varying combinations.
-    tag_re    = re.compile(r'\[(ST|OP)\]')
+    tag_re    = re.compile(r'\[(ST|OP|OT)\]')
     ticker_re = re.compile(r'\(([A-Z]{1,5})\)')
     # Transaction type (+ optional "(partial)") immediately followed by the
     # transaction and notification dates — the adjacency marks the metadata cell
@@ -335,6 +347,10 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
     meta_re = re.compile(
         r'\b(SP|SB|S|P)(\s*\(partial\))?\s+(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})'
     )
+    # Owner code, when present, leads the metadata cell — a blank column is the
+    # filer's own holding. The trailing space keeps a name like "SPX Corp" from
+    # reading as a spouse trade.
+    owner_re = re.compile(r'^(SP|DC|JT)\s')
     full_amount_re = re.compile(r'\$[\d,]+\s*-\s*\$[\d,]+')
     low_amount_re  = re.compile(r'(\$[\d,]+)\s*-\s*$')
     any_amount_re  = re.compile(r'\$[\d,]+\+?')
@@ -396,6 +412,9 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
 
         tx_type = "sp" if meta.group(2) else meta.group(1)
 
+        om = owner_re.match(meta_line.strip())
+        owner = HOUSE_OWNERS[om.group(1)] if om else "Self"
+
         trades.append({
             "chamber":           "House",
             "representative":    member_name,
@@ -406,8 +425,8 @@ def _parse_house_pdf(pdf_url: str, member_name: str) -> list[dict]:
             "disclosure_date":   notified.strftime("%Y-%m-%d") if notified else "",
             "amount":            amount,
             "ptr_link":          pdf_url,
-            "owner":             "",
-            "asset_type":        "option" if code == "OP" else "stock",
+            "owner":             owner,
+            "asset_type":        HOUSE_ASSET_TYPES[code],
         })
 
     return trades

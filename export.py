@@ -22,6 +22,7 @@ import history
 import review
 from analyzer import (
     parse_amount_value,
+    sector_of,
     disclosure_lag_days,
     find_cross_signals,
     enrich_and_score,
@@ -48,10 +49,7 @@ CHART_DAYS = 180
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _sector_of(ticker: str) -> str:
-    for sector, tickers in config.SECTOR_TICKERS.items():
-        if ticker.upper() in {t.upper() for t in tickers}:
-            return sector
-    return ""
+    return sector_of(ticker)
 
 
 def _price_series(ticker: str, start: datetime) -> dict | None:

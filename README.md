@@ -1,6 +1,6 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
-**Status:** ✅ Complete — all modules built, 118 unit tests passing  
+**Status:** ✅ Complete — all modules built, 141 unit tests passing  
 **Live dashboard:** GitHub Pages (rebuilt daily) · Streamlit: https://congressional-trade-monitor.streamlit.app/  
 **Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends one ranked email digest on schedule, tracks whether its own alerts actually beat the market, and provides a visual dashboard for exploratory analysis.
@@ -57,6 +57,33 @@ Members who pick individual names (Gottheimer, Delaney, Taylor, Salazar) barely 
 Direction is deliberately **not** filtered in `compute_win_rates`: `_score_trade` already scores
 purchases only, and that must hold regardless of `ALERT_ON_SALES`. The dashboard trade log and
 the control arm still see every trade.
+
+### New listings cannot form a cluster
+
+A cluster alert assumes that members converging on one ticker independently is evidence they
+believe the same thing. For a ticker that has only just started trading that inference is
+invalid: a new listing is a common external event every member reacts to at once, so breadth
+measures the size of the news rather than the strength of the conviction.
+
+`SPCX` is the worked example. Four members — Moskowitz, Meuser, McGuire, Cisneros — bought
+Space Exploration Technologies between 2026-06-12 and 2026-06-18. The first of those dates is
+**the stock's first day of trading**. Scored as a cluster it comes out at **60.3**, which would
+have ranked second of every alert in the period on the strength of having four members instead
+of two. Its actual return by 2026-08-28 was **−12% to −27% against SPY's +3.7%**, an excess of
+**−16.1%** measured from the earliest buy.
+
+`detect_cluster_alerts` therefore drops any cluster whose ticker had less than
+`NEW_LISTING_DAYS = 30` of price history when the window opened. Two properties matter:
+
+- **It fails open.** `_is_new_listing` returns False when yfinance has nothing to say, so a
+  price-feed outage can never silently suppress alerts. The guard fires only on positive
+  evidence of a new listing.
+- **Suppressed is not deleted**, on the same principle as the eligibility filters above. The
+  trades appear in no alert, so `history.record_control` sweeps them into the control arm and
+  keeps scoring them — if new listings turn out to outperform, the record will say so.
+
+Run against the full 180-day log the guard removes exactly one cluster (SPCX) and leaves the
+other 21 — all long-listed names — untouched.
 
 ### Conviction score
 
@@ -333,8 +360,59 @@ The Senate eFD viewer pages render transaction data as a clean HTML table. No PD
 ### House: PDF parsing
 House PTR filings are only available as PDFs. The Clerk search endpoint returns server-rendered HTML (confirmed — not a React SPA), so a plain POST gives us the full filing index. Each PDF is parsed with pdfplumber using regex to extract ticker, type, date, and amount.
 
+**Asset-type tags.** Each row carries a bracketed code, and `HOUSE_ASSET_TYPES` decides which survive: `[ST]` stock, `[OP]` option, `[OT]` other securities. Bonds (`[GS]`, `[CS]`) and private holdings (`[PS]`, `[OI]`) are dropped — they have no tradeable ticker to price against SPY.
+
+`[OT]` is kept because **the House form has no ETF tag**; every House ETF is filed as "other securities". While `[OT]` was excluded, a Senate ETF purchase appeared in the feed and an identical House one did not — across a 180-day window that asymmetry read as 1 ETF trade in 1,131 House rows against 7 in 469 Senate rows, and it meant a House member buying a gold or silver fund was structurally invisible. The Senate needs no equivalent handling: eFD types ETFs as `Stock`, so they were never being dropped there.
+
+**Owner codes.** The Senate viewer has an Owner column reading `Self` / `Spouse` / `Joint` /
+`Child`; the House form instead prefixes the metadata cell with `SP`, `DC` or `JT` and leaves it
+blank for the filer's own holdings. The House parser was hardcoding `owner: ""` for every trade,
+so 39% of House rows silently lost the fact that the trade was not the member's own — three of
+the four SpaceX buys above were a spouse, a dependent child and a trust. `HOUSE_OWNERS` maps the
+codes onto the Senate's vocabulary so both chambers read the same downstream, where the notifier
+and both dashboards were already prepared to render it. Requiring whitespace after the code is
+what stops a name like `SPX Technologies` from being read as a spouse trade.
+
+`[OT]` also carries non-traded funds — BDCs, unlisted REITs — which have no ticker in the asset cell and so still fall out at the existing ticker check. Tickers written without parentheses (`Invesco QQQ`, `NYSEARCA: DIA`) are still missed; widening the ticker regex to catch them would risk reading bare words like `NEW` as tickers across the whole feed, which is a worse trade than missing an occasional row.
+
 ### Committee conflict detection
 `committees.py` fetches committee assignments for all 535 members from official government XML and HTML sources. On **every** alert tier — cluster, cross-signal, win-rate, and watchlist — each participating member's committees and subcommittees are cross-referenced against sector-to-committee mappings in `config.py`. If a member sits on a committee with oversight authority over the traded ticker's sector, the conflict is flagged on that alert's card in the digest.
+
+**The sector map is keyed on industry, not ticker.** `analyzer.sector_map()` resolves a ticker to
+its market industry and maps that through `config.INDUSTRY_SECTORS`. The hand-maintained ticker
+list this replaced covered **101 tickers against 631 actually traded — 12.8%**, so more than
+three-quarters of alertable trades could never flag a conflict no matter who traded them. It had
+also rotted in the ways such lists do: `L3H` is not a ticker (L3Harris is `LHX`), `DISH` was
+delisted, `GOOGL` was listed but `GOOG` was not — so one share class flagged and the other did
+not — and 20 of its 101 entries never appeared in the log at all.
+
+Keying on industry inverts the maintenance problem. A ticker list grows without limit and needs a
+new entry for every listing; the industry taxonomy is bounded, so 71 industry rows classify
+**65.8% of tickers and 70.1% of trades**, and the table does not go stale when a company lists.
+Conflicts flagged on deliberate purchases went from **19 to 67**.
+
+| | Ticker list | Industry map |
+|---|---|---|
+| Tickers classified | 81 / 631 (12.8%) | 415 / 631 (65.8%) |
+| Trades classified | 21.5% | 70.1% |
+| Alertable trades classified | 22.4% | 68.7% |
+| Conflicts on deliberate purchases | 19 | 67 |
+
+`SECTOR_TICKERS` survives as a deliberately short **override** list, checked first. Funds carry no
+industry at all, and a few operating companies file under one that hides what they are — `MSTR`
+is "Software", `COIN` is "Capital Markets". Lookups are cached in `ticker_sectors.json` through
+the same Gist-backed state store as the rest, so a run costs one call per never-before-seen
+ticker and nothing for one already known.
+
+Industries no committee oversees are deliberately absent from the map. Home improvement retail,
+apparel and leisure resolve to no sector and raise no flag, which is the honest answer rather
+than a forced one.
+
+**Keyword matching is word-bounded.** `flag_conflicts` used plain substring containment, which
+matched `"Technology"` inside `"Biotechnology"` and made an agriculture biotech subcommittee
+oversee every tech holding its members touched — 15 false flags across the log, all of them on
+one senator. Whole-word matching removes those while keeping real phrase hits like
+`"Telecommunications and Media"`.
 
 **Committee names come from the XML, not a lookup table.** `MemberData.xml` carries a `<committees>` block defining every code it later references, so both committee and subcommittee names are parsed from the same document as the assignments and cannot drift out of sync with them. An earlier hand-written code→name map had `FA00` as Financial Services (it is Foreign Affairs) and `SO00` as Intelligence (it is Ethics), and was missing `SM00`, `ZS00` and `QJ00` entirely — which both showed raw codes in the UI and produced false Financial Services conflict flags for all 54 Foreign Affairs members. Subcommittees now resolve to real names too, so they can actually match the sector keywords in `config.COMMITTEE_SECTORS`; previously they were stored as codes like `FA05` and could never match anything.
 
@@ -356,7 +434,8 @@ Both chambers normalize to the same dict so all downstream modules are chamber-a
     "disclosure_date":   "2026-06-02",
     "amount":            "$100,001 - $250,000",
     "ptr_link":          "https://...",
-    "owner":             "Self" | "Spouse" | "Dependent Child" | "",
+    "owner":             "Self" | "Spouse" | "Joint" | "Child",
+    "asset_type":        "stock" | "option" | "other",
 }
 ```
 
@@ -532,7 +611,7 @@ sold it, so that signal was wrong so far — the same percentage would be a ✓ 
 ./.venv/bin/pytest tests/
 ```
 
-96 tests, no network — yfinance and the Gist are monkeypatched out, so the suite runs offline and deterministically. Coverage is deliberately concentrated on the logic that is easy to get quietly wrong rather than on plumbing:
+141 tests, no network — yfinance and the Gist are monkeypatched out, so the suite runs offline and deterministically. Coverage is deliberately concentrated on the logic that is easy to get quietly wrong rather than on plumbing:
 
 | Area | What it pins |
 |------|--------------|
@@ -546,6 +625,11 @@ sold it, so that signal was wrong so far — the same percentage would be a ✓ 
 | Significance | That obvious noise reads as "no evidence" and a clear effect reads as real |
 | State retention | Pruning by a key's *newest* date, and that undated keys are never dropped |
 | Feed resilience | Retry, pagination past the 100-row cap, and that an outage is not an empty result |
+| House asset tags | That ETFs survive under `[OT]`, bonds and untickered funds do not, and an `[OT]` row cannot leak its dates to the row below it |
+| House owner codes | That `SP`/`DC`/`JT` map to the Senate's words, a bare row is the filer's own, and an asset name starting with those letters is not misread |
+| New-listing guard | That an IPO-week cluster is suppressed, a long-listed one is not, and an unavailable price feed fails open rather than silencing alerts |
+| Sector resolution | That industry drives the sector, an override beats it, funds and unmapped industries resolve to nothing, and a ticker is looked up only once |
+| Conflict keywords | That a keyword cannot match inside a longer word, and that whole phrases still match |
 
 ---
 

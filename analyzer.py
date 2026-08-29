@@ -149,6 +149,24 @@ def latest_price(ticker: str) -> float | None:
     return _cache_price(cache_key, float(closes.iloc[-1]) if closes is not None else None)
 
 
+def _is_new_listing(ticker: str, as_of: datetime) -> bool:
+    """
+    True when `ticker` had less than NEW_LISTING_DAYS of price history as of
+    `as_of` — i.e. it had only just started trading.
+
+    Unknown prices read as False. A yfinance outage must never silently
+    suppress alerts; the guard only fires on positive evidence of a new listing.
+    """
+    lookback = config.NEW_LISTING_DAYS * 3
+    closes = _download_closes(
+        ticker, as_of - timedelta(days=lookback), as_of + timedelta(days=10)
+    )
+    if closes is None:
+        return False
+    first = closes.index[0]
+    return (as_of.date() - first.date()).days < config.NEW_LISTING_DAYS
+
+
 def _score_trade(trade: dict, window_days: int) -> bool | None:
     """
     Score a single trade as win (True), loss (False), or None (unscoreable).
@@ -327,6 +345,15 @@ def detect_cluster_alerts(trades: list[dict]) -> list[Alert]:
             members_in_window = {t["representative"] for t in window_trades}
 
             if len(members_in_window) >= config.CLUSTER_MIN_MEMBERS:
+                # A ticker that only began trading inside the window explains the
+                # convergence by itself: a new listing is a common external event
+                # every member reacts to at once, not evidence that they know the
+                # same thing. Suppressed rather than scored — the trades stay out
+                # of every alert, so record_control sweeps them into the control
+                # arm and keeps measuring them.
+                if _is_new_listing(ticker, dates[i]):
+                    break
+
                 action   = "buying" if direction == "buy" else "selling"
                 names    = ", ".join(sorted(members_in_window))
                 earliest = window_trades[0]["transaction_date"]
@@ -740,6 +767,68 @@ def state_write(filename: str, data) -> None:
 #   crosscluster → "crosscluster|APH|<participant key>|..."
 # so the newest date in a key dates the key itself, whatever its shape.
 _KEY_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+# ── Ticker → sector (industry taxonomy, cached) ───────────────────────────────
+
+_SECTOR_CACHE: dict[str, str] | None = None
+
+
+def _industry_cache() -> dict[str, str]:
+    """Ticker → industry, loaded once per process. "" means looked up and the
+    ticker has no industry — a fund, or a symbol yfinance does not know."""
+    global _SECTOR_CACHE
+    if _SECTOR_CACHE is None:
+        _SECTOR_CACHE = state_read(config.SECTOR_CACHE_FILE, {})
+    return _SECTOR_CACHE
+
+
+def _fetch_industry(ticker: str) -> str:
+    """The industry yfinance reports for a ticker, or "" if it has none."""
+    import logging, contextlib, io as _io
+    with contextlib.redirect_stderr(_io.StringIO()):
+        try:
+            logging.disable(logging.CRITICAL)
+            info = yf.Ticker(ticker).info
+        except Exception:
+            return ""
+        finally:
+            logging.disable(logging.NOTSET)
+    return info.get("industry") or ""
+
+
+def sector_map(tickers) -> dict[str, str]:
+    """
+    Sector for each ticker, "" where it has none. Resolved as a batch so a page
+    or digest covering hundreds of tickers costs one state write, not hundreds.
+
+    An explicit SECTOR_TICKERS entry wins; otherwise the ticker's industry is
+    looked up (cached) and mapped through INDUSTRY_SECTORS.
+    """
+    wanted = {t.upper() for t in tickers}
+    cache  = _industry_cache()
+
+    missing = sorted(wanted - cache.keys())
+    for ticker in missing:
+        cache[ticker] = _fetch_industry(ticker)
+    if missing:
+        state_write(config.SECTOR_CACHE_FILE, cache)
+
+    overrides = {
+        t.upper(): sector
+        for sector, tickers_ in config.SECTOR_TICKERS.items()
+        for t in tickers_
+    }
+    return {
+        ticker: overrides.get(ticker)
+                or config.INDUSTRY_SECTORS.get(cache.get(ticker, ""), "")
+        for ticker in wanted
+    }
+
+
+def sector_of(ticker: str) -> str:
+    """Sector for one ticker, "" when it has none."""
+    return sector_map([ticker])[ticker.upper()]
 
 
 def _prune_seen(seen: set[str], today: datetime | None = None) -> set[str]:

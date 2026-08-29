@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -69,6 +70,9 @@ def insider_trade(**overrides) -> dict:
 def no_network(monkeypatch):
     """Fail loudly rather than hitting yfinance if a test forgets to stub prices."""
     monkeypatch.setattr(analyzer, "_download_closes", lambda *a, **k: None)
+    monkeypatch.setattr(analyzer, "_fetch_industry", lambda ticker: "")
+    monkeypatch.setattr(analyzer, "state_write", lambda name, data: None)
+    monkeypatch.setattr(analyzer, "_SECTOR_CACHE", {})
     analyzer._PRICE_CACHE.clear()
 
 
@@ -1426,3 +1430,272 @@ def test_both_chambers_dead_is_still_an_error(monkeypatch):
 
     with pytest.raises(fetcher.ChamberFetchError):
         fetcher.fetch_all(days=45, warnings=[])
+
+
+# ── House PTR asset types ─────────────────────────────────────────────────────
+
+def _house_pdf(monkeypatch, text: str) -> list[dict]:
+    """Run _parse_house_pdf over literal PTR text, no download or PDF decode."""
+    class _Page:
+        def extract_text(self): return text
+
+    class _PDF:
+        pages = [_Page()]
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(fetcher.requests, "get", lambda *a, **k: type(
+        "Resp", (), {"content": b"", "raise_for_status": lambda s: None})())
+    monkeypatch.setattr(fetcher.pdfplumber, "open", lambda buf: _PDF())
+    return fetcher._parse_house_pdf("https://example.test/ptr.pdf", "Jane Doe")
+
+
+def test_house_etf_is_captured_from_the_other_securities_tag(monkeypatch):
+    """The House form has no ETF tag — ETFs are filed under [OT], so dropping
+    [OT] meant dropping every House ETF trade, gold and silver funds included."""
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "Ishares Morningstar ETF Mid Cap S (partial) 06/12/2026 07/08/2026 $1,001 - $15,000",
+        "(IMCB) [OT]",
+    ]))
+    assert len(trades) == 1
+    assert trades[0]["ticker"] == "IMCB"
+    assert trades[0]["asset_type"] == "other"
+    assert trades[0]["type"] == "sale_partial"
+    assert trades[0]["transaction_date"] == "2026-06-12"
+    assert trades[0]["disclosure_date"] == "2026-07-08"
+
+
+def test_house_stock_and_option_tags_keep_their_asset_types(monkeypatch):
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "SP Pinterest, Inc. Class A Common Stock S 08/07/2026 08/07/2026 $15,001 -",
+        "(PINS) [ST] $50,000",
+        "Alphabet Inc. Call Option P 06/01/2026 06/10/2026 $1,001 - $15,000",
+        "(GOOGL) [OP]",
+    ]))
+    assert [(t["ticker"], t["asset_type"]) for t in trades] == [
+        ("PINS", "stock"), ("GOOGL", "option")]
+
+
+def test_house_bonds_and_untickered_funds_are_still_skipped(monkeypatch):
+    """[OT] carries non-traded funds as well as ETFs. Those have no ticker to
+    price, and bonds are not equity exposure at all — both stay out."""
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "JT CADDO CNTY OKLA P 07/24/2026 08/05/2026 $50,001 -",
+        "GOVERNMENTAL BLDG $100,000",
+        "05.00000% 09/01/2030 [GS]",
+        "SP Apollo Debt Solutions BDC Class S P 03/03/2026 04/09/2026 $1,001 - $15,000",
+        "[OT]",
+    ]))
+    assert trades == []
+
+
+def test_an_other_securities_row_does_not_leak_its_dates_to_the_next_row(monkeypatch):
+    """The tag regex also marks row boundaries for the wrapped-asset-name walk-up.
+    While [OT] was unrecognized a following row could reach past it and inherit
+    the ETF's transaction dates."""
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "Ishares Morningstar ETF Mid Cap S (partial) 06/12/2026 07/08/2026 $1,001 - $15,000",
+        "(IMCB) [OT]",
+        "Some Asset Name With No Metadata Of Its Own",
+        "(ZZZZ) [ST]",
+    ]))
+    assert [t["ticker"] for t in trades] == ["IMCB"]
+
+
+# ── New-listing guard ─────────────────────────────────────────────────────────
+
+def _closes_from(first_close: str, through: str):
+    """A close series that starts on first_close — stands in for yfinance."""
+    idx = pd.date_range(first_close, through, freq="D")
+    return pd.Series([100.0] * len(idx), index=idx)
+
+
+def _two_member_cluster(ticker="SPCX", first="2026-06-12", second="2026-06-15"):
+    return [
+        trade(representative="Jared Moskowitz", ticker=ticker, transaction_date=first),
+        trade(representative="Daniel Meuser",   ticker=ticker, transaction_date=second),
+    ]
+
+
+def test_a_cluster_on_a_brand_new_listing_is_suppressed(monkeypatch):
+    """Four members bought SpaceX in its first week of trading. The convergence
+    is explained by the IPO, not by shared conviction — scored as a cluster it
+    would have ranked second of every alert in the period while trailing SPY by
+    16 points."""
+    monkeypatch.setattr(analyzer, "_download_closes",
+                        lambda t, s, e: _closes_from("2026-06-12", "2026-06-30"))
+    assert analyzer.detect_cluster_alerts(_two_member_cluster()) == []
+
+
+def test_a_cluster_on_a_long_listed_ticker_still_fires(monkeypatch):
+    monkeypatch.setattr(analyzer, "_download_closes",
+                        lambda t, s, e: _closes_from("2024-01-02", "2026-06-30"))
+    alerts = analyzer.detect_cluster_alerts(_two_member_cluster(ticker="NVDA"))
+    assert [a.ticker for a in alerts] == ["NVDA"]
+
+
+def test_a_ticker_listed_just_outside_the_guard_still_fires(monkeypatch):
+    """The guard is a hard age threshold, not a fuzzy one — NEW_LISTING_DAYS of
+    history is enough to stop blaming the listing for the cluster."""
+    first = datetime.strptime("2026-06-12", "%Y-%m-%d") - timedelta(
+        days=config.NEW_LISTING_DAYS)
+    monkeypatch.setattr(analyzer, "_download_closes",
+                        lambda t, s, e: _closes_from(first.strftime("%Y-%m-%d"), "2026-06-30"))
+    assert len(analyzer.detect_cluster_alerts(_two_member_cluster())) == 1
+
+
+def test_the_guard_fails_open_when_prices_are_unavailable():
+    """A yfinance outage must not silently suppress alerts. The autouse
+    no_network fixture already has _download_closes returning None."""
+    assert len(analyzer.detect_cluster_alerts(_two_member_cluster())) == 1
+
+
+# ── House PTR owner codes ─────────────────────────────────────────────────────
+
+def test_house_owner_codes_map_to_the_senate_vocabulary(monkeypatch):
+    """The House form carries the owner as a leading code and the Senate viewer
+    as a word; both chambers have to read the same downstream."""
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "SP Ares Capital Corporation - Closed End S 07/24/2026 07/24/2026 $1,001 - $15,000",
+        "(ARCC) [ST]",
+        "DC Cencora, Inc. Common Stock (COR) S 05/06/2026 05/31/2026 $1,001 - $15,000",
+        "[ST]",
+        "JT Comcast Corporation - Class A S 08/05/2026 08/05/2026 $1,001 - $15,000",
+        "(CMCSA) [ST]",
+    ]))
+    assert [(t["ticker"], t["owner"]) for t in trades] == [
+        ("ARCC", "Spouse"), ("COR", "Child"), ("CMCSA", "Joint")]
+
+
+def test_a_house_row_with_no_owner_code_is_the_filers_own(monkeypatch):
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "Space Exploration Technologies Corp. P 06/12/2026 06/30/2026 $1,001 - $15,000",
+        "- Class A Common Stock (SPCX) [ST]",
+    ]))
+    assert [t["owner"] for t in trades] == ["Self"]
+
+
+def test_an_asset_name_beginning_with_an_owner_code_is_not_an_owner(monkeypatch):
+    """"SPX" starts with "SP". Requiring the space after the code is what keeps
+    the company from being read as a spouse."""
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "SPX Technologies, Inc. Common Stock P 06/01/2026 06/10/2026 $1,001 - $15,000",
+        "(SPXC) [ST]",
+    ]))
+    assert [t["owner"] for t in trades] == ["Self"]
+
+
+def test_a_wrapped_row_takes_its_owner_from_the_metadata_line(monkeypatch):
+    """Meuser's SpaceX buy: the asset name wraps, so the owner code sits two
+    lines above the tag it belongs to."""
+    trades = _house_pdf(monkeypatch, "\n".join([
+        "DC Space Exploration Technologies Corp. P 06/15/2026 06/16/2026 $15,001 -",
+        "- Class A Common Stock (SPCX) [ST] $50,000",
+    ]))
+    assert [(t["ticker"], t["owner"], t["amount"]) for t in trades] == [
+        ("SPCX", "Child", "$15,001 - $50,000")]
+
+
+# ── Ticker → sector ───────────────────────────────────────────────────────────
+
+def _industries(monkeypatch, mapping: dict) -> list[str]:
+    """Stub the industry lookup; returns the list of tickers it was asked for."""
+    asked = []
+    def fetch(ticker):
+        asked.append(ticker)
+        return mapping.get(ticker, "")
+    monkeypatch.setattr(analyzer, "_fetch_industry", fetch)
+    return asked
+
+
+def test_sector_comes_from_the_ticker_industry(monkeypatch):
+    _industries(monkeypatch, {"BWXT": "Aerospace & Defense", "NDAQ": "Financial Data & Stock Exchanges"})
+    assert analyzer.sector_map(["BWXT", "NDAQ"]) == {"BWXT": "Defense", "NDAQ": "Finance"}
+
+
+def test_both_share_classes_resolve_the_same_way(monkeypatch):
+    """The hand-maintained map held GOOGL but not GOOG, so one share class
+    flagged a conflict and the other did not."""
+    _industries(monkeypatch, {"GOOG":  "Internet Content & Information",
+                              "GOOGL": "Internet Content & Information"})
+    assert analyzer.sector_map(["GOOG", "GOOGL"]) == {"GOOG": "Tech", "GOOGL": "Tech"}
+
+
+def test_an_explicit_override_beats_the_industry(monkeypatch):
+    """MSTR files as a software company. What it actually is, for oversight
+    purposes, is a bitcoin holding."""
+    _industries(monkeypatch, {"MSTR": "Software - Application"})
+    assert analyzer.sector_of("MSTR") == "Crypto"
+
+
+def test_a_fund_with_no_industry_has_no_sector(monkeypatch):
+    """Broad-market funds carry no industry and should not be forced into one —
+    no sector means no conflict flag, which is the honest answer."""
+    _industries(monkeypatch, {"IVV": ""})
+    assert analyzer.sector_of("IVV") == ""
+
+
+def test_an_unmapped_industry_has_no_sector(monkeypatch):
+    """Restaurants exist in the taxonomy but no committee oversees them."""
+    _industries(monkeypatch, {"CMG": "Restaurants"})
+    assert analyzer.sector_of("CMG") == ""
+
+
+def test_a_ticker_is_only_looked_up_once(monkeypatch):
+    """The cache is what keeps a digest covering hundreds of tickers from
+    costing hundreds of network round trips."""
+    asked = _industries(monkeypatch, {"NVDA": "Semiconductors"})
+    analyzer.sector_map(["NVDA", "NVDA"])
+    analyzer.sector_of("NVDA")
+    assert asked == ["NVDA"]
+
+
+def test_a_ticker_with_no_industry_is_not_looked_up_again(monkeypatch):
+    """"Resolved to nothing" has to be cached too, or every run re-fetches
+    every fund it has ever seen."""
+    asked = _industries(monkeypatch, {})
+    analyzer.sector_of("IVV")
+    analyzer.sector_of("IVV")
+    assert asked == ["IVV"]
+
+
+def test_the_conflict_flag_follows_the_industry(monkeypatch):
+    """The SpaceX buys: two of the four members sit on Armed Services, and the
+    old ticker list had no entry for a stock that had just started trading."""
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "House",
+        "committees": ["Armed Services"], "subcommittees": ["Tactical Air and Land Forces"]})
+    _industries(monkeypatch, {"SPCX": "Aerospace & Defense"})
+
+    conflicts = committees.flag_conflicts("John McGuire", "SPCX")
+    assert len(conflicts) == 1
+    assert "Armed Services" in conflicts[0] and "Defense" in conflicts[0]
+
+
+def test_every_sector_has_committee_keywords():
+    """A sector no committee maps to can never produce a flag — it would be a
+    silently dead branch of the map."""
+    sectors = set(config.INDUSTRY_SECTORS.values()) | set(config.SECTOR_TICKERS)
+    assert sectors - set(config.COMMITTEE_SECTORS) == set()
+
+
+def test_a_keyword_does_not_match_inside_a_longer_word(monkeypatch):
+    """"Technology" is a substring of "Biotechnology", so plain containment made
+    an agriculture biotech subcommittee oversee every tech holding its members
+    touched — 15 false flags across the log."""
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "Senate", "committees": ["Agriculture"],
+        "subcommittees": ["Conservation, Research, and Biotechnology"]})
+    _industries(monkeypatch, {"PLTR": "Software - Infrastructure"})
+
+    assert committees.flag_conflicts("John Boozman", "PLTR") == []
+
+
+def test_a_keyword_still_matches_as_a_whole_phrase(monkeypatch):
+    monkeypatch.setattr(committees, "get_member_committees", lambda name: {
+        "name": name, "chamber": "House", "committees": ["Energy and Commerce"],
+        "subcommittees": ["Telecommunications and Media"]})
+    _industries(monkeypatch, {"T": "Telecom Services"})
+
+    conflicts = committees.flag_conflicts("Some Member", "T")
+    assert any("Telecommunications and Media" in c for c in conflicts)

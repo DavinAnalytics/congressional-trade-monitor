@@ -24,7 +24,7 @@ from email.mime.text import MIMEText
 from datetime import datetime
 
 import config
-from analyzer import Alert, parse_amount_value
+from analyzer import Alert, parse_amount_value, sector_map
 from committees import display_name
 
 
@@ -687,10 +687,7 @@ def send_monthly_review(findings: list, performance: str) -> None:
 
 def _sector_net_activity(trades: list[dict]) -> list[tuple[str, int, int]]:
     """Map trades to sectors; return (sector, buy_count, sell_count) sorted by net buys."""
-    ticker_sector: dict[str, str] = {}
-    for sector, tickers in config.SECTOR_TICKERS.items():
-        for t in tickers:
-            ticker_sector[t.upper()] = sector
+    ticker_sector = sector_map({t["ticker"] for t in trades})
 
     buys: dict[str, int] = {}
     sells: dict[str, int] = {}
