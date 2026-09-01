@@ -193,7 +193,7 @@ def main() -> None:
 Examples:
   ./.venv/bin/python monitor.py               Run forever, polling every 4 hours
   ./.venv/bin/python monitor.py --once        Single poll, print alerts, exit
-  ./.venv/bin/python monitor.py --once --export   ...and rebuild the static dashboard
+  ./.venv/bin/python monitor.py --once --export   ...and rebuild the GitHub Pages dashboard
   ./.venv/bin/python monitor.py --summary     Send weekly digest email, exit
   ./.venv/bin/python monitor.py --monthly     Email the monthly "is this working?" review, exit
   ./.venv/bin/python monitor.py --performance Score past alerts against SPY, print, exit
@@ -223,7 +223,7 @@ Examples:
     parser.add_argument(
         "--export",
         action="store_true",
-        help="Also rebuild the static dashboard (site/index.html) after the poll",
+        help="Also rebuild the GitHub Pages dashboard (site/index.html) after the poll",
     )
     parser.add_argument(
         "--monthly",

@@ -1,8 +1,8 @@
 # Congressional Trade Monitor
 **Author:** Davin Kim  
 **Status:** ✅ Complete — all modules built, 145 unit tests passing  
-**Live dashboard:** GitHub Pages (rebuilt daily) · Streamlit: https://congressional-trade-monitor.streamlit.app/  
-**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, Streamlit, Altair, google-genai (Gemini 2.5 Flash)  
+**Live dashboard:** GitHub Pages (rebuilt daily)  
+**Stack:** Python, Requests, BeautifulSoup, pdfplumber, yfinance, smtplib, python-dotenv, google-genai (Gemini 2.5 Flash)  
 **Purpose:** Personal-use automation tool that monitors congressional stock disclosures **and corporate insider open-market buys**, detects high-signal trading patterns — including tickers accumulated by Congress and company executives at the same time — sends one ranked email digest on schedule, tracks whether its own alerts actually beat the market, and provides a visual dashboard for exploratory analysis.
 
 ---
@@ -121,8 +121,8 @@ python3 -m venv .venv
 cp .env.example .env
 # Edit .env with your Gmail sender, app password, and recipient
 
-# Launch the visual dashboard (no credentials required)
-./.venv/bin/python -m streamlit run dashboard.py
+# Preview or rebuild the dashboard (no credentials required)
+./.venv/bin/python export.py
 
 # Preview filtered OpenInsider insider buys
 ./.venv/bin/python openinsider_fetcher.py
@@ -157,7 +157,7 @@ cp .env.example .env
 
 ---
 
-## Static Dashboard (GitHub Pages)
+## Dashboard (GitHub Pages)
 
 `export.py` writes `site/index.html` — one self-contained file with the data inlined — from the data the daily GitHub Actions run has already fetched. Published to GitHub Pages on every run.
 
@@ -166,58 +166,13 @@ cp .env.example .env
 ./.venv/bin/python export.py                    # standalone rebuild (re-fetches)
 ```
 
-Everything is computed once a day in CI, and congressional disclosures lag up to 45 days by law, so there is nothing a live server could show that a file written this morning cannot. Streamlit re-scrapes 200 House PDFs whenever its cache misses; this pays that cost once, inside a job that was already running, and serves an instant page afterwards. No build step, no Node — Python writes the HTML.
+Everything is computed once a day in CI, and congressional disclosures lag up to 45 days by law, so there is nothing a live server could show that a file written this morning cannot. The daily job pays the fetch cost once and serves an instant page afterwards. No build step, no Node — Python writes the HTML.
 
-Interactivity is client-side, so filtering and sorting are instant: search and sector/type/chamber/window filters over the full trade log, sortable columns everywhere, expandable signal cards, and inline SVG price-vs-SPY charts. The page carries the performance and edge-tracking view the Streamlit app never had.
+Interactivity is client-side, so filtering and sorting are instant: search and sector/type/chamber/window filters over the full trade log, sortable columns everywhere, expandable signal cards, and inline SVG price-vs-SPY charts. The page also carries the performance and edge-tracking view.
 
 **The page shows every live signal, not just the day's new ones.** `analyze()` suppresses alerts it has already emailed, so the list `monitor.poll()` hands to the exporter is a one-day delta — publishing that directly left the dashboard reading "0 signals" on any quiet day, which is most days. `export.current_signals()` re-runs the four detectors over the same window and marks the ones that fired this morning as `new`. The detectors are pure; only `analyze()` touches the seen-state, so rebuilding the picture here cannot silence the next real run.
 
 **One-time setup:** Settings → Pages → Source → **GitHub Actions**. Until that is set the deploy step fails; it is marked `continue-on-error` so a missing Pages config cannot fail the alert run. Note the published page is public if the repo is — it is derived from public disclosures, but the conviction scores, win-rate leaderboard and alert history are visible to anyone with the URL.
-
----
-
-## Streamlit Dashboard
-
-`dashboard.py` is a Streamlit app that provides a read-only visual interface over the same data sources the monitor uses. It **never calls `analyzer.analyze()`** — only the individual detectors — so it cannot mutate `seen_trades.json` or trigger duplicate email alerts.
-
-```bash
-./.venv/bin/python -m streamlit run dashboard.py
-```
-
-> Use `./.venv/bin/python -m streamlit` (not a bare `streamlit`) to ensure the same Python environment that has all dependencies installed.
-
-### Tabs
-
-| Tab | Contents |
-|-----|----------|
-| 🔔 Alerts | All fired alerts with colored buy/sell header, trades table, win rate, committee assignments, Altair price chart vs SPY, TradingView link |
-| 📋 Trades | Full trade log filterable by sector and type; win rate progress bar; committee column; click any row for member detail modal |
-| 🏆 Leaderboard | Win rate rankings; click any row for member detail modal |
-| 🏢 Insider Buys | CEO/CFO open-market buys (date, name, title, company, ticker, total value, shares, price), sorted by total value descending, with rows highlighted when Congress also bought the ticker in the same window; a correlations panel listing every ticker appearing in both datasets (most recent signal first); and a **Top 5 Buys** section charting each of the five largest buys vs SPY since the purchase date |
-
-### Activity Summary
-
-Between the metric header and the tabs, a summary panel shows:
-
-- **🔥 Hot Sector / ❄️ Avoid Sector** — derived from net buy vs sell activity across `config.SECTOR_TICKERS`; Avoid Sector only shown when traded tickers span more than one sector
-- **⚖️ Net Activity** — top 5 most net-bought and most net-sold tickers, by trade count and estimated dollar volume; each ticker is a clickable TradingView link
-
-### Sidebar Controls
-
-| Control | Effect |
-|---------|--------|
-| Days window (7–90) | Filters trades in memory — no re-fetch |
-| Sector filter | Filters Trades tab by `config.SECTOR_TICKERS` membership |
-| Trade type | Purchase / Sale / Partial Sale |
-| Refresh Data | Clears all caches and re-fetches from live government sources |
-
-Trade data and win rates are cached for 1 hour. The days slider, sector, and type filters all apply in memory instantly — only "Refresh Data" triggers a live fetch.
-
-### Price Performance Charts
-
-The Alerts tab and the Insider Buys "Top 5" section share a single chart renderer (`_render_price_chart`), so both look identical: an Altair line chart indexed to 100 at the start date (the first trade in the alert window, or the insider's purchase date), comparing the stock (blue, `#3a86ff`) vs SPY (red, `#e63946`). Y-axis is zoomed to the actual data range so small divergences are visible.
-
-Price history (`_get_price_history`) is fetched from yfinance at daily granularity (`interval="1d"`) and the index is reduced to bare dates, so the x-axis shows one clean tick per day (`Jun 11`, `Jun 12`, …) with no intraday "12 PM" labels even on very short windows. Only dates where **both** the ticker and SPY have a posted close are plotted, so the two lines always span the same range — smaller or foreign tickers that lag SPY by a day on yfinance no longer leave one line trailing past the other.
 
 ---
 
@@ -234,10 +189,9 @@ congressional-trade-monitor/
 ├── committees.py        # Committee assignments + conflict detection (official gov sources)
 ├── notifier.py          # Ranked digest formatting and sending
 ├── monitor.py           # Main polling loop
-├── dashboard.py         # Streamlit visual dashboard (read-only, no side effects)
-├── export.py            # Builds the static dashboard from the daily run's data
+├── export.py            # Builds the GitHub Pages dashboard from the daily run's data
 ├── site/
-│   └── template.html    # Static dashboard source (index.html is generated)
+│   └── template.html    # Dashboard HTML template (index.html is generated)
 ├── .env                 # Your credentials — gitignored, never committed
 ├── .env.example         # Credential template — committed, no real values
 ├── .gitignore           # Blocks .env and seen_trades.json from git
@@ -370,7 +324,7 @@ blank for the filer's own holdings. The House parser was hardcoding `owner: ""` 
 so 39% of House rows silently lost the fact that the trade was not the member's own — three of
 the four SpaceX buys above were a spouse, a dependent child and a trust. `HOUSE_OWNERS` maps the
 codes onto the Senate's vocabulary so both chambers read the same downstream, where the notifier
-and both dashboards were already prepared to render it. Requiring whitespace after the code is
+and dashboard were already prepared to render it. Requiring whitespace after the code is
 what stops a name like `SPX Technologies` from being read as a spouse trade.
 
 `[OT]` also carries non-traded funds — BDCs, unlisted REITs — which have no ticker in the asset cell and so still fall out at the existing ticker check. Tickers written without parentheses (`Invesco QQQ`, `NYSEARCA: DIA`) are still missed; widening the ticker regex to catch them would risk reading bare words like `NEW` as tickers across the whole feed, which is a worse trade than missing an occasional row.
@@ -508,7 +462,7 @@ Senate committee assignments come from a separate senate.gov page that 403s unde
 conditions. That path already degraded gracefully (a printed warning); the effect is that
 senators temporarily lose committee-conflict flags while House members keep theirs.
 
-That distinction matters: "the feed is down" makes cross-signals impossible, while "no insiders bought anything" is a real market observation, and collapsing the two silently switches off the strongest signal in the monitor. Callers degrade rather than crash — `monitor.poll()` continues with congressional alerts and prints `CROSS-SIGNAL DETECTION DISABLED FOR THIS RUN`, passing a warning banner into the digest email so a thin digest is never mistaken for a quiet market; the dashboard shows `st.warning` and renders its remaining panels.
+That distinction matters: "the feed is down" makes cross-signals impossible, while "no insiders bought anything" is a real market observation, and collapsing the two silently switches off the strongest signal in the monitor. Callers degrade rather than crash — `monitor.poll()` continues with congressional alerts and prints `CROSS-SIGNAL DETECTION DISABLED FOR THIS RUN`, passing a warning banner into the digest email so a thin digest is never mistaken for a quiet market; the dashboard shows the same warning and renders its remaining panels.
 
 **Noise filtering at the scraper boundary** (so analyzer, notifier, and dashboard all receive a clean list):
 - **Minimum trade value** — drops buys under `MIN_TRADE_VALUE` ($50k), removing micro-cap penny-stock noise.
