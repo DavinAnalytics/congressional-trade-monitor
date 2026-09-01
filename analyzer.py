@@ -495,7 +495,7 @@ def find_cross_signals(
     Returns one match dict per qualifying ticker, carrying only the trades that
     are actually part of the overlap:
       {ticker, congress: [...], insider: [...], first: datetime, last: datetime, span_days}
-    Pure function — no I/O — so the dashboard can reuse it.
+    Pure function — no I/O — so export.py can reuse it.
     """
     def by_ticker(trades: list[dict], purchases_only: bool) -> dict[str, list[tuple[dict, datetime]]]:
         grouped: dict[str, list[tuple[dict, datetime]]] = defaultdict(list)

@@ -1,13 +1,7 @@
 """
 export.py — Congressional Trade Monitor
-Builds the static dashboard: a single self-contained HTML file, regenerated
-daily by the GitHub Actions run that already fetched the data.
-
-Why static rather than a live app: everything here is computed once a day in CI,
-and congressional disclosures lag up to 45 days by law, so there is nothing a
-live server could show that a file written this morning cannot. Streamlit
-re-scrapes 200 House PDFs whenever its cache misses; this pays that cost once,
-in a job that was running anyway, and serves an instant page afterwards.
+Builds the GitHub Pages dashboard: a single self-contained HTML file,
+regenerated daily by the GitHub Actions run that already fetched the data.
 
 Public interface:
   build(alerts, trades, insider_trades, win_rates) -> Path
