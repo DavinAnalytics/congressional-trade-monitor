@@ -218,6 +218,48 @@ pre.perf{
   overflow-x:auto;white-space:pre;
 }
 .note{font-size:13px;color:var(--muted);margin:0 0 16px;max-width:70ch;line-height:1.65}
+.tick-link{cursor:pointer;border-bottom:1px dashed var(--accent)}
+.tick-link:hover{color:var(--accent)}
+.fund-strip{display:flex;flex-wrap:wrap;gap:10px 18px;padding:12px 0 14px;border-top:1px solid var(--line);margin-top:4px}
+.fund-strip div span{display:block;font-size:10px;color:var(--faint);letter-spacing:.05em;text-transform:uppercase}
+.fund-strip div b{font-family:var(--mono);font-size:13px}
+.fund-strip .unrel b{color:var(--muted)}
+.fund-strip .warn-tag{font-size:9px;color:var(--warn);font-family:var(--mono);margin-left:4px}
+.act-chip{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:2px;border:1px solid var(--line-2)}
+.act-chip.actionable{color:var(--buy);border-color:var(--buy);background:var(--buy-soft)}
+.act-chip.aging{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.act-chip.stale{color:var(--sell);border-color:var(--sell);background:var(--sell-soft)}
+.links{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 14px}
+.links a{font-size:12px;padding:4px 9px;border:1px solid var(--line-2);border-radius:3px;background:var(--raised)}
+.links a:hover{border-color:var(--accent);text-decoration:none}
+.news-list{margin:0;padding:0;list-style:none}
+.news-list li{font-size:12.5px;padding:7px 0;border-bottom:1px solid var(--line);color:var(--ink-2)}
+.news-list li:last-child{border-bottom:0}
+.news-list .pub{font-size:11px;color:var(--faint);font-family:var(--mono)}
+.sector-map{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin:0 0 20px}
+.sector-cell{background:var(--surface);border:1px solid var(--line);padding:11px 13px}
+.sector-cell b{display:block;font-family:var(--mono);font-size:18px}
+.sector-cell span{font-size:11px;color:var(--faint)}
+.sector-bar{height:4px;background:var(--line);margin-top:8px}
+.sector-bar i{display:block;height:100%;background:var(--accent)}
+.sen-grid{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 18px}
+.sen-box{background:var(--surface);border:1px solid var(--line);padding:10px 14px;min-width:100px}
+.sen-box b{font-family:var(--mono);font-size:20px;display:block}
+.sen-box span{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em}
+.overlay{position:fixed;inset:0;background:rgba(10,12,18,.55);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto}
+.overlay[hidden]{display:none}
+.dossier{background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);max-width:920px;width:100%;padding:0 0 20px;margin:auto}
+.dossier-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;padding:18px 20px;border-bottom:1px solid var(--line)}
+.dossier-head h2{font-size:22px}
+.dossier-body{padding:16px 20px}
+.dossier .close{margin-left:auto;border:1px solid var(--line-2);background:var(--surface);font:inherit;font-size:12px;padding:5px 11px;border-radius:3px;cursor:pointer}
+.tv-wrap{margin:14px 0;border:1px solid var(--line);overflow:hidden;border-radius:4px;height:360px}
+.tv-wrap iframe{width:100%;height:100%;border:0}
+.brief-box{margin:0;padding:14px;background:var(--raised);border:1px solid var(--line);font-family:var(--mono);font-size:11.5px;line-height:1.55;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+.bot-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
+.pe-range{font-size:12px;color:var(--muted);font-family:var(--mono);margin:4px 0 10px}
+.margin-spark{display:flex;gap:4px;align-items:flex-end;height:36px;margin:6px 0 10px}
+.margin-spark i{display:block;width:14px;background:var(--accent);opacity:.75;border-radius:1px 1px 0 0}
 footer{border-top:1px solid var(--line);padding:20px 0 40px;font-size:12px;color:var(--faint)}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
@@ -295,6 +337,33 @@ footer{border-top:1px solid var(--line);padding:20px 0 40px;font-size:12px;color
     <div class="grid2" id="ins-charts"></div>
   </section>
 
+  <section class="panel" id="p-cross" role="tabpanel" hidden>
+    <p class="note">Tickers accumulated by both Congress and corporate insiders within the
+      alert window. Click a ticker for the full research dossier.</p>
+    <div class="tw"><table id="t-cross"></table></div>
+  </section>
+
+  <section class="panel" id="p-research" role="tabpanel" hidden>
+    <p class="note">Structured exports for Grok and other bots. Fundamentals are yfinance
+      snapshots — only fields marked reliable are safe for hard filters; verify others in
+      Qualtrim before excluding names.</p>
+    <h2 style="font-size:17px;margin:0 0 8px">Sector attention map</h2>
+    <p class="note" style="margin-top:0">Tier-weighted signal density by sector (cross-signal
+      weighs highest).</p>
+    <div class="sector-map" id="sector-map"></div>
+    <h2 style="font-size:17px;margin:20px 0 8px">Insider seniority breakdown</h2>
+    <div class="sen-grid" id="sen-totals"></div>
+    <div class="tw" style="margin-bottom:20px"><table id="t-sen-signals"></table></div>
+    <h2 style="font-size:17px;margin:0 0 8px">Bot export</h2>
+    <div class="controls bot-row">
+      <select id="brief-ticker" aria-label="Select ticker for research brief"></select>
+      <button class="tbtn" id="copy-brief" type="button">Copy research brief</button>
+      <button class="tbtn" id="copy-all-briefs" type="button">Copy all live signals</button>
+      <span class="hint" id="brief-status"></span>
+    </div>
+    <pre class="brief-box" id="brief-preview"></pre>
+  </section>
+
   <section class="panel" id="p-perf" role="tabpanel" hidden>
     <p class="note">Every alert is scored twice: from the politician's trade date, and
       from the day the alert actually reached you. Only the second says whether this
@@ -309,6 +378,16 @@ footer{border-top:1px solid var(--line);padding:20px 0 40px;font-size:12px;color
   Data from efdsearch.senate.gov, disclosures-clerk.house.gov and openinsider.com.
   Rebuilt daily by GitHub Actions. Not investment advice.
 </div></footer>
+
+<div class="overlay" id="dossier-overlay" hidden>
+  <div class="dossier" role="dialog" aria-labelledby="dossier-title">
+    <div class="dossier-head">
+      <h2 id="dossier-title"></h2>
+      <button class="close" id="dossier-close" type="button">Close</button>
+    </div>
+    <div class="dossier-body" id="dossier-body"></div>
+  </div>
+</div>
 
 <script>
 const DATA = /*__DATA__*/null;
@@ -361,6 +440,8 @@ $("#findings").innerHTML = DATA.findings.length
 /* ── Tabs ── */
 const TABS = [
   ["signals","Signals",DATA.alerts.length],
+  ["cross","Cross-signals",DATA.cross?.length||0],
+  ["research","Bot research",null],
   ["trades","Trades",DATA.trades.length],
   ["board","Leaderboard",DATA.leaderboard.length],
   ["insider","Insider buys",DATA.insider.length],
@@ -375,7 +456,73 @@ $("#tabs").onclick = e => {
   TABS.forEach(([id])=>$("#p-"+id).hidden = id !== b.dataset.t);
 };
 
-/* ── Charts: two lines indexed to 100, faint grid, emphasised endpoint ── */
+/* ── Fundamentals display helpers ── */
+const FUND_LABELS = {
+  price:"Price", trailing_pe:"Trail P/E", forward_pe:"Fwd P/E", peg:"PEG",
+  gross_margin_pct:"Gross margin", operating_margin_pct:"Net margin",
+  revenue_growth_pct:"Rev growth", earnings_growth_pct:"EPS growth",
+  market_cap:"Mkt cap", price_to_gross_profit:"P/GP",
+};
+function fmtFundVal(k, f){
+  if(!f || f.value==null) return "—";
+  if(k==="market_cap") return money(f.value);
+  if(k==="price") return "$"+f.value.toFixed(2);
+  if(k.endsWith("_pct")) return f.value.toFixed(1)+"%";
+  return String(f.value);
+}
+function fundStrip(ticker){
+  const f = (DATA.fundamentals||{})[ticker];
+  if(!f || !f.fields) return "";
+  const keys = ["trailing_pe","forward_pe","peg","gross_margin_pct","revenue_growth_pct","price_to_gross_profit"];
+  const cells = keys.filter(k=>f.fields[k]).map(k=>{
+    const field = f.fields[k];
+    const rel = field.reliable !== false;
+    return `<div class="${rel?"":"unrel"}"><span>${FUND_LABELS[k]||k}${
+      !rel?'<span class="warn-tag" title="Verify in Qualtrim">~</span>':""}</span>
+      <b>${esc(fmtFundVal(k, field))}</b></div>`;
+  }).join("");
+  if(!cells) return "";
+  const pe = f.historical_pe;
+  const peNote = pe && pe.current!=null
+    ? `<p class="pe-range">5y P/E range ${pe.min}–${pe.max} (med ${pe.median}) · now ${
+        pe.percentile!=null?pe.percentile+"th %ile":"—"}</p>` : "";
+  return `<div class="fund-strip">${cells}</div>${peNote}`;
+}
+function deepLinks(links){
+  if(!links) return "";
+  const items = [
+    ["TradingView","tradingview"],["Qualtrim","qualtrim"],["OpenInsider","openinsider"],
+    ["Yahoo","yahoo"],["SEC","sec"],
+  ].filter(([,k])=>links[k]).map(([l,k])=>
+    `<a href="${esc(links[k])}" target="_blank" rel="noopener">${l} ↗</a>`);
+  return items.length ? `<div class="links">${items.join("")}</div>` : "";
+}
+function marginSpark(trend){
+  if(!trend || !trend.length) return "";
+  const max = Math.max(...trend.map(t=>t.margin_pct), 1);
+  return `<div class="margin-spark" title="Quarterly gross margin trend">${
+    trend.slice().reverse().map(t=>
+      `<i style="height:${Math.max(4, t.margin_pct/max*36).toFixed(0)}px" title="${esc(t.date)}: ${t.margin_pct}%"></i>`
+    ).join("")}</div>`;
+}
+function newsBlock(fund){
+  if(!fund) return "";
+  const parts = [];
+  if(fund.earnings){
+    parts.push(`<p class="note" style="margin:0 0 10px">Earnings ${
+      esc(fund.earnings.date)} (${esc(fund.earnings.label)}) — catalyst context, not sentiment.</p>`);
+  }
+  const heads = fund.headlines || [];
+  if(heads.length){
+    parts.push(`<ul class="news-list">${heads.map(h=>
+      `<li>${h.link?`<a href="${esc(h.link)}" rel="noopener">${esc(h.title)}</a>`:esc(h.title)}
+        <span class="pub">${esc(h.publisher)}${h.date?" · "+esc(h.date):""}</span></li>`
+    ).join("")}</ul>`);
+  }
+  return parts.join("");
+}
+
+/* ── Charts with trade markers ── */
 function chart(series, w=560, h=150){
   if(!series) return `<p class="empty">No price history.</p>`;
   const pad = {t:8,r:44,b:16,l:4};
@@ -392,9 +539,17 @@ function chart(series, w=560, h=150){
             <text x="${w-pad.r+6}" y="${(Y(v)+3.5).toFixed(1)}" font-size="9.5"
             fill="var(--faint)" font-family="var(--mono)">${v.toFixed(0)}</text>`;
   }).join("");
+  const idx = Object.fromEntries(series.dates.map((d,i)=>[d,i]));
+  const markers = (series.markers||[]).map(m=>{
+    const i = idx[m.date]; if(i==null) return "";
+    const col = m.kind==="insider" ? "var(--buy)" : "var(--accent)";
+    const x = X(i).toFixed(1);
+    return `<line x1="${x}" x2="${x}" y1="${pad.t}" y2="${h-pad.b}" stroke="${col}" stroke-width="1.2" opacity=".55"/>
+            <circle cx="${x}" cy="${Y(series.ticker[i]).toFixed(1)}" r="3.5" fill="${col}" opacity=".9"/>`;
+  }).join("");
   const endT = series.ticker[series.ticker.length-1], endS = series.spy[series.spy.length-1];
-  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Price versus SPY, indexed to 100">
-    ${grid}
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Price versus SPY with trade markers">
+    ${grid}${markers}
     <path d="${area(series.ticker)}" fill="var(--accent)" opacity=".07"/>
     <path d="${path(series.spy)}" fill="none" stroke="var(--muted)" stroke-width="1.3"
           stroke-dasharray="3 3" opacity=".8"/>
@@ -405,13 +560,75 @@ function chart(series, w=560, h=150){
 }
 const legend = t => `<div class="legend">
   <span><i style="background:var(--accent)"></i>${esc(t)}</span>
-  <span><i style="background:var(--muted)"></i>SPY</span></div>`;
+  <span><i style="background:var(--muted)"></i>SPY</span>
+  <span><i style="background:var(--accent);opacity:.6"></i>Congress</span>
+  <span><i style="background:var(--buy)"></i>Insider</span></div>`;
+
+function tradingViewEmbed(symbol){
+  if(!symbol) return "";
+  const theme = document.documentElement.getAttribute("data-theme")==="dark" ||
+    (!document.documentElement.getAttribute("data-theme") && matchMedia("(prefers-color-scheme:dark)").matches)
+    ? "dark" : "light";
+  const url = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(symbol)}&interval=D&hidesidetoolbar=1&theme=${theme}`;
+  return `<div class="tv-wrap"><iframe src="${url}" title="TradingView chart" loading="lazy"></iframe></div>`;
+}
+
+/* ── Ticker dossier modal ── */
+function openDossier(ticker){
+  const d = (DATA.dossiers||{})[ticker];
+  if(!d) return;
+  const fund = d.fundamentals || {};
+  $("#dossier-title").innerHTML = `<span class="tick-link">${esc(d.ticker)}</span>${
+    d.name?` <span style="font-size:14px;color:var(--muted);font-weight:400">${esc(d.name)}</span>`:""}`;
+  const act = d.actionability || {};
+  const sen = d.insider_seniority || {};
+  const senTxt = Object.entries(sen).filter(([,v])=>v).map(([k,v])=>`${k}: ${v}`).join(" · ") || "—";
+  $("#dossier-body").innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px">
+      <span class="chip ${d.signals[0]?.tier||""}">${esc(d.signals[0]?.label||"No live signal")}</span>
+      ${d.signals[0]?`<span class="score num">${d.signals[0].score.toFixed(0)}/100</span>`:""}
+      <span class="act-chip ${esc(act.score||"unknown")}">${esc(act.score||"unknown")}</span>
+      <span style="font-size:12px;color:var(--muted)">${esc(act.reason||"")}</span>
+    </div>
+    ${deepLinks(d.links)}
+    ${fundStrip(d.ticker)}
+    ${marginSpark(fund.gross_margin_trend)}
+    ${tradingViewEmbed(d.tradingview_symbol)}
+    ${DATA.prices[d.ticker]?`<div class="chart">${chart(DATA.prices[d.ticker], 860, 170)}${legend(d.ticker)}</div>`:""}
+    ${d.ai_context?`<div class="conflicts" style="border-left-color:var(--accent);background:var(--accent-soft)">
+      <p style="color:var(--accent)">AI context (Gemini)</p><p style="margin:0;font-size:13px;color:var(--ink-2)">${esc(d.ai_context)}</p></div>`:""}
+    ${newsBlock(fund)}
+    <p class="note">Congress buys: ${d.congress_buys} · Insider buys: ${d.insider_buys} · Insider seniority: ${esc(senTxt)}</p>
+    ${d.conflicts.length?`<div class="conflicts"><p>Committee conflicts</p><ul>${
+      d.conflicts.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></div>`:""}
+    <div class="bot-row"><button class="tbtn copy-one-brief" data-ticker="${esc(d.ticker)}" type="button">Copy research brief</button></div>`;
+  $("#dossier-overlay").hidden = false;
+}
+$("#dossier-close").onclick = () => { $("#dossier-overlay").hidden = true; };
+$("#dossier-overlay").onclick = e => { if(e.target.id==="dossier-overlay") $("#dossier-overlay").hidden = true; };
+document.addEventListener("click", e => {
+  const tk = e.target.closest("[data-dossier]");
+  if(tk) openDossier(tk.dataset.dossier);
+  const cb = e.target.closest(".copy-one-brief");
+  if(cb) copyBrief(cb.dataset.ticker);
+});
+
+function tickLink(ticker){ return `<span class="tick-link" data-dossier="${esc(ticker)}" role="button" tabindex="0">${esc(ticker)}</span>`; }
 
 /* ── Signals ── */
-$("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
+$("#p-signals").innerHTML = (DATA.sector_heatmap||[]).length ? `
+  <h2 style="font-size:17px;margin:0 0 8px">Sector attention</h2>
+  <div class="sector-map">${DATA.sector_heatmap.map(s=>{
+    const max = DATA.sector_heatmap[0].weight||1;
+    return `<div class="sector-cell"><b class="num">${s.weight.toFixed(1)}</b>
+      <span>${esc(s.sector)} · ${s.signals} signal${s.signals!==1?"s":""}</span>
+      <div class="sector-bar"><i style="width:${(s.weight/max*100).toFixed(0)}%"></i></div></div>`;
+  }).join("")}</div>` : "";
+$("#p-signals").innerHTML += DATA.alerts.length ? DATA.alerts.map((a,i)=>{
   const right = a.excess==null ? null : (a.direction==="buy" ? a.excess>0 : a.excess<0);
   const lag = a.lag_days==null ? "unknown"
     : a.lag_days+"d "+(a.lag_days<=14?"(fresh)":a.lag_days<=30?"(aging)":"(stale)");
+  const act = a.actionability || {};
   const m = [];
   if(a.congress_dollars) m.push(["Congress size", approx(a.congress_dollars),""]);
   if(a.insider_dollars)  m.push(["Insider size", money(a.insider_dollars),""]);
@@ -419,12 +636,19 @@ $("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
   if(a.pct_since!=null) m.push(["Since trade date",
       pct(a.pct_since)+(a.spy_since!=null?` (SPY ${pct(a.spy_since)})`:""),
       right==null?"":right?"ok":"bad"]);
+  const sen = a.insider.length ? a.insider.map(t=>{
+    const s = t.seniority || "other";
+    return s;
+  }) : [];
+  const senCount = sen.reduce((o,s)=>(o[s]=(o[s]||0)+1,o),{});
+  const senLine = Object.entries(senCount).map(([k,v])=>`${k}: ${v}`).join(" · ");
   return `<article class="card">
     <button class="card-head" aria-expanded="${i===0}" data-card="${i}">
       <span class="rank num">#${i+1}</span>
       <span class="chip ${a.tier}">${esc(a.label)}</span>
-      <span class="tick">${esc(a.ticker)}</span>
+      <span class="tick">${tickLink(a.ticker)}</span>
       ${a.is_new?`<span class="new">new</span>`:""}
+      <span class="act-chip ${esc(act.score)}">${esc(act.score)}</span>
       <span class="spacer"></span>
       <span class="meter"><i style="width:${Math.max(2,a.score)}%"></i></span>
       <span class="score">${a.score.toFixed(0)}<small>/100</small></span>
@@ -432,7 +656,14 @@ $("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
     <div class="card-body" ${i===0?"":"hidden"} id="body-${i}">
       <div class="metrics">${m.map(([k,v,cl])=>
         `<div><span>${k}</span><b class="${cl}">${esc(v)}</b></div>`).join("")}</div>
-      <p class="note" style="margin:0 0 14px">${esc(a.headline)}</p>
+      ${deepLinks((DATA.fundamentals||{})[a.ticker]?.links)}
+      ${fundStrip(a.ticker)}
+      <p class="note" style="margin:0 0 10px">${esc(a.headline)}</p>
+      ${senLine?`<p class="note" style="margin:0 0 10px">Insider seniority: ${esc(senLine)}${
+        a.has_top_insider?" · <b style=color:var(--accent)>CEO/CFO involved</b>":""}</p>`:""}
+      ${a.ai_context?`<div class="conflicts" style="border-left-color:var(--accent);background:var(--accent-soft)">
+        <p style="color:var(--accent)">AI context</p><p style="margin:0;font-size:13px">${esc(a.ai_context)}</p></div>`:""}
+      ${newsBlock((DATA.fundamentals||{})[a.ticker])}
       ${a.conflicts.length?`<div class="conflicts"><p>Committees with oversight relevant to ${esc(a.ticker)}</p>
         <ul>${a.conflicts.map(c=>`<li>${esc(c)}</li>`).join("")}</ul></div>`:""}
       ${DATA.prices[a.ticker]?`<div class="chart">${chart(DATA.prices[a.ticker])}${legend(a.ticker)}</div>`:""}
@@ -446,20 +677,87 @@ $("#p-signals").innerHTML = DATA.alerts.length ? DATA.alerts.map((a,i)=>{
           <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">Filing</a>`:"—"}</td></tr>`).join("")}</tbody>
       </table></div>
       ${a.insider.length?`<div class="tw" style="margin-top:11px"><table>
-        <thead><tr><th>Insider</th><th>Title</th><th>Date</th><th>Value</th><th>Filing</th></tr></thead>
+        <thead><tr><th>Insider</th><th>Title</th><th>Seniority</th><th>Date</th><th>Value</th><th>Filing</th></tr></thead>
         <tbody>${a.insider.map(t=>`<tr><td>${esc(t.name)}</td><td>${esc(t.title)}</td>
+          <td class="n">${esc(t.seniority||"—")}</td>
           <td class="n">${esc(t.date)}</td><td class="n">${money(t.value)}</td>
           <td>${t.link?`<a href="${esc(t.link)}" rel="noopener">Filing</a>`:"—"}</td></tr>`).join("")}</tbody>
       </table></div>`:""}
+      <div class="bot-row"><button class="tbtn copy-one-brief" data-ticker="${esc(a.ticker)}" type="button">Copy research brief</button></div>
     </div></article>`;
 }).join("") : `<p class="empty">No signals in the current window.</p>`;
 
 $("#p-signals").onclick = e => {
+  if(e.target.closest("[data-dossier]") || e.target.closest(".copy-one-brief")) return;
   const b = e.target.closest(".card-head"); if(!b) return;
   const body = $("#body-"+b.dataset.card);
   body.hidden = !body.hidden;
   b.setAttribute("aria-expanded", !body.hidden);
 };
+
+/* ── Cross-signals ── */
+sortable("#t-cross", [
+  {k:"ticker", t:"Ticker", v:r=>r.ticker},
+  {k:"congress", t:"Congress", v:r=>r.congress},
+  {k:"insider", t:"Insider", v:r=>r.insider},
+  {k:"span", t:"Span", v:r=>r.span_days},
+  {k:"first", t:"First", v:r=>r.first},
+  {k:"last", t:"Last", v:r=>r.last},
+], ()=>DATA.cross||[], r=>`<tr>
+  <td class="n"><b>${tickLink(r.ticker)}</b></td>
+  <td class="n">${r.congress}</td><td class="n">${r.insider}</td>
+  <td class="n">${r.span_days}d</td>
+  <td class="n">${esc(r.first)}</td><td class="n">${esc(r.last)}</td></tr>`)();
+
+/* ── Research / bot export ── */
+const briefTickers = Object.keys(DATA.briefs||{});
+$("#brief-ticker").innerHTML = briefTickers.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("");
+function briefJson(ticker){ return JSON.stringify((DATA.briefs||{})[ticker]||{}, null, 2); }
+function showBriefPreview(){
+  const t = $("#brief-ticker").value;
+  $("#brief-preview").textContent = t ? briefJson(t) : "No tickers with live research data.";
+}
+$("#brief-ticker").onchange = showBriefPreview;
+showBriefPreview();
+async function copyText(text){
+  try { await navigator.clipboard.writeText(text); $("#brief-status").textContent = "Copied"; }
+  catch { $("#brief-status").textContent = "Copy failed"; }
+  setTimeout(()=>$("#brief-status").textContent="", 2000);
+}
+function copyBrief(ticker){
+  copyText(briefJson(ticker));
+}
+$("#copy-brief").onclick = ()=> copyBrief($("#brief-ticker").value);
+$("#copy-all-briefs").onclick = ()=>{
+  const all = (DATA.alerts||[]).map(a=> (DATA.briefs||{})[a.ticker]).filter(Boolean);
+  copyText(JSON.stringify({generated_at: DATA.generated_at, signals: all}, null, 2));
+};
+
+const sen = DATA.insider_seniority?.totals || {};
+$("#sen-totals").innerHTML = Object.entries(sen).map(([k,v])=>
+  `<div class="sen-box"><b class="num">${v}</b><span>${esc(k)}</span></div>`).join("")
+  || `<p class="empty">No insider buys in window.</p>`;
+sortable("#t-sen-signals", [
+  {k:"score", t:"Score", v:r=>r.score},
+  {k:"ticker", t:"Ticker", v:r=>r.ticker},
+  {k:"tier", t:"Tier", v:r=>r.tier},
+  {k:"ceo", t:"CEO/CFO", v:r=>r.counts["CEO/CFO"]||0},
+  {k:"off", t:"Officers", v:r=>r.counts.officer||0},
+  {k:"dir", t:"Directors", v:r=>r.counts.director||0},
+], ()=>DATA.insider_seniority?.on_signals||[], r=>`<tr>
+  <td class="n">${r.score.toFixed(0)}</td>
+  <td class="n">${tickLink(r.ticker)}</td>
+  <td><span class="chip ${r.tier}">${esc(r.tier)}</span></td>
+  <td class="n">${r.counts["CEO/CFO"]||0}${r.has_top_insider?" ★":""}</td>
+  <td class="n">${r.counts.officer||0}</td>
+  <td class="n">${r.counts.director||0}</td></tr>`)();
+
+$("#sector-map").innerHTML = (DATA.sector_heatmap||[]).map(s=>{
+  const max = (DATA.sector_heatmap[0]||{}).weight||1;
+  return `<div class="sector-cell"><b class="num">${s.weight.toFixed(1)}</b>
+    <span>${esc(s.sector)} · ${s.signals} signal${s.signals!==1?"s":""}</span>
+    <div class="sector-bar"><i style="width:${(s.weight/max*100).toFixed(0)}%"></i></div></div>`;
+}).join("");
 
 /* ── Sortable table helper ── */
 function sortable(tableSel, cols, getRows, render){
@@ -515,7 +813,7 @@ const drawTrades = sortable("#t-trades", [
 ], tradeRows, t=>`<tr>
   <td class="n">${esc(t.date)}</td>
   <td>${esc(t.member)}${t.owner?` <span style="color:var(--faint)">(${esc(t.owner)})</span>`:""}</td>
-  <td class="n"><b>${esc(t.ticker)}</b>${t.asset_type==="option"?` <span style="color:var(--faint)">opt</span>`:""}</td>
+  <td class="n"><b>${tickLink(t.ticker)}</b>${t.asset_type==="option"?` <span style="color:var(--faint)">opt</span>`:""}</td>
   <td style="color:${t.type==="purchase"?"var(--buy)":"var(--sell)"}">${TYPE[t.type]||esc(t.type)}</td>
   <td class="n">${approx(t.value)}</td>
   <td class="n">${t.lag==null?"—":t.lag+"d"}</td>
@@ -557,12 +855,14 @@ const drawIns = sortable("#t-insider", [
   {k:"ticker", t:"Ticker",  v:t=>t.ticker},
   {k:"value",  t:"Value",   v:t=>t.value},
   {k:"shares", t:"Shares",  v:t=>t.shares},
+  {k:"sen",    t:"Seniority", v:t=>t.seniority||""},
 ], insRows, t=>`<tr class="${t.also_congress?"flag":""}">
   <td class="n">${esc(t.date)}</td><td>${esc(t.name)}</td>
   <td style="color:var(--muted)">${esc(t.title)}</td>
-  <td class="n"><b>${esc(t.ticker)}</b></td>
+  <td class="n"><b>${tickLink(t.ticker)}</b></td>
   <td class="n">${money(t.value)}</td>
-  <td class="n">${t.shares?t.shares.toLocaleString():"—"}</td></tr>`);
+  <td class="n">${t.shares?t.shares.toLocaleString():"—"}</td>
+  <td class="n">${esc(t.seniority||"—")}</td></tr>`);
 function refreshIns(){ $("#i-count").textContent = drawIns()+" of "+DATA.insider.length; }
 $("#q-ins").addEventListener("input", refreshIns);
 $("#f-overlap").addEventListener("change", refreshIns);
