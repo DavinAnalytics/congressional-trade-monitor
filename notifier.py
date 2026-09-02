@@ -372,6 +372,43 @@ def _metrics(alert: Alert) -> list[tuple[str, str]]:
     return out
 
 
+def _alert_context_id(alert: Alert) -> str:
+    """Stable key matching export._signature for persisting AI blurbs."""
+    first = alert.meta.get("first_date") or alert.fired_at[:10]
+    return f"{alert.tier}|{alert.ticker}|{first}"
+
+
+def _save_ai_context(alert: Alert, context: str) -> None:
+    """Persist a Gemini blurb so the dashboard can show it without re-calling."""
+    from analyzer import state_read, state_write
+
+    if not context:
+        return
+    data = state_read(config.AI_CONTEXT_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    rid = _alert_context_id(alert)
+    data[rid] = {
+        "ticker":  alert.ticker,
+        "tier":    alert.tier,
+        "context": context,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    # Keep the most recent 250 entries — enough for months of top-N blurbs.
+    if len(data) > 250:
+        items = sorted(data.items(), key=lambda kv: kv[1].get("saved_at", ""))
+        data = dict(items[-250:])
+    state_write(config.AI_CONTEXT_FILE, data)
+
+
+def load_ai_context() -> dict[str, dict]:
+    """All persisted AI blurbs, keyed by alert id."""
+    from analyzer import state_read
+
+    data = state_read(config.AI_CONTEXT_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
 def _alert_card(alert: Alert, rank: int, with_ai: bool) -> tuple[str, str]:
     """
     Render one alert as a (plain_text, html) block for the digest.
@@ -389,6 +426,8 @@ def _alert_card(alert: Alert, rank: int, with_ai: bool) -> tuple[str, str]:
     congress = [t for t in alert.trades if t.get("source") != "insider"]
 
     context = generate_alert_context(alert, conflicts) if with_ai else None
+    if context:
+        _save_ai_context(alert, context)
 
     # ── Plain text ──
     text_lines = [

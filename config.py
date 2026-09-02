@@ -82,6 +82,9 @@ SEEN_TRADES_FILE = "seen_trades.json"
 # Lives alongside SEEN_TRADES_FILE in the same Gist (a Gist holds many files).
 HISTORY_FILE = "alert_history.json"
 
+# Gemini alert blurbs persisted from the digest for the dashboard research layer.
+AI_CONTEXT_FILE = "ai_context.json"
+
 # Congressional trades that did NOT trigger an alert, scored identically.
 # Without this baseline an alert hit rate is uninterpretable: if un-alerted
 # trades perform just as well, the detectors add nothing and the absolute
