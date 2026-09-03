@@ -237,25 +237,51 @@ def _earnings_proximity(info: dict) -> dict | None:
 
 
 def _headlines(tk: yf.Ticker, limit: int = 5) -> list[dict]:
+    """
+    Recent headlines from yfinance. Newer yfinance builds nest fields under
+    `content` (`title`, `provider`, `canonicalUrl`, `pubDate`) instead of the
+    flat `title` / `publisher` / `link` shape — read both.
+    """
     out = []
     try:
         for item in (tk.news or [])[:limit]:
-            title = (item.get("title") or "").strip()
+            content = item.get("content") if isinstance(item.get("content"), dict) else {}
+            title = (item.get("title") or content.get("title") or "").strip()
             if not title:
                 continue
-            pub = item.get("publisher") or item.get("publisherName") or ""
-            ts = item.get("providerPublishTime")
+            provider = content.get("provider") if isinstance(content.get("provider"), dict) else {}
+            pub = (
+                item.get("publisher")
+                or item.get("publisherName")
+                or provider.get("displayName")
+                or ""
+            )
             date = ""
+            ts = item.get("providerPublishTime")
             if ts:
                 try:
                     date = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
                 except (TypeError, ValueError, OSError):
                     pass
+            if not date:
+                raw = content.get("pubDate") or content.get("displayTime") or ""
+                if isinstance(raw, str) and len(raw) >= 10:
+                    date = raw[:10]
+            link = item.get("link") or ""
+            if not link:
+                for key in ("canonicalUrl", "clickThroughUrl"):
+                    url_obj = content.get(key)
+                    if isinstance(url_obj, dict) and url_obj.get("url"):
+                        link = url_obj["url"]
+                        break
+                    if isinstance(url_obj, str) and url_obj:
+                        link = url_obj
+                        break
             out.append({
                 "title": title,
                 "publisher": pub,
                 "date": date,
-                "link": item.get("link") or "",
+                "link": link,
             })
     except Exception:
         pass

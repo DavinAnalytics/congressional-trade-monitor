@@ -110,3 +110,33 @@ def test_bot_brief_includes_disclaimer():
         "links": {},
     })
     assert "Qualtrim" in brief["disclaimer"]
+
+
+def test_headlines_parse_nested_yfinance_content_shape():
+    """yfinance 1.5+ nests title/provider/url under content, not the top level."""
+    mock_tk = MagicMock()
+    mock_tk.news = [{
+        "id": "abc",
+        "content": {
+            "title": "Somnigroup International Poised to See Growth",
+            "pubDate": "2026-09-02T12:00:00Z",
+            "provider": {"displayName": "Barrons.com"},
+            "canonicalUrl": {"url": "https://example.com/story"},
+        },
+    }]
+    heads = fund._headlines(mock_tk)
+    assert len(heads) == 1
+    assert heads[0]["title"].startswith("Somnigroup")
+    assert heads[0]["publisher"] == "Barrons.com"
+    assert heads[0]["date"] == "2026-09-02"
+    assert heads[0]["link"] == "https://example.com/story"
+
+
+def test_sector_heatmap_falls_back_to_fundamentals_sector():
+    import export
+
+    rows = export._sector_heatmap(
+        [{"ticker": "SGI", "tier": "cross_cluster", "score": 80}],
+        fundamentals_map={"SGI": {"sector": "Consumer Cyclical"}},
+    )
+    assert rows[0]["sector"] == "Consumer Cyclical"

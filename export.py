@@ -182,12 +182,17 @@ def _insider_seniority_breakdown(insider_rows: list[dict],
     }
 
 
-def _sector_heatmap(alert_rows: list[dict]) -> list[dict]:
+def _sector_heatmap(alert_rows: list[dict],
+                    fundamentals_map: dict | None = None) -> list[dict]:
     """Tier-weighted congressional attention by sector."""
     scores: dict[str, float] = {}
     counts: dict[str, int] = {}
+    fundamentals_map = fundamentals_map or {}
     for a in alert_rows:
-        sec = _sector_of(a["ticker"]) or "Unknown"
+        # Prefer the monitor's industry→sector map, then yfinance sector from
+        # the fundamental snapshot, so new tickers don't collapse into Unknown.
+        fund = fundamentals_map.get(a["ticker"]) or {}
+        sec = _sector_of(a["ticker"]) or fund.get("sector") or "Unknown"
         w = TIER_WEIGHTS.get(a["tier"], 1)
         scores[sec] = scores.get(sec, 0) + w * (a["score"] / 100)
         counts[sec] = counts.get(sec, 0) + 1
@@ -528,7 +533,7 @@ def collect(alerts: list, trades: list[dict], insider_trades: list[dict],
         "fundamentals": fundamentals_map,
         "dossiers":    dossiers,
         "briefs":      briefs,
-        "sector_heatmap": _sector_heatmap(alert_rows),
+        "sector_heatmap": _sector_heatmap(alert_rows, fundamentals_map),
         "insider_seniority": _insider_seniority_breakdown(insider_payload, alert_rows),
         "performance": performance,
         "performance_text": history.format_summary(performance),
