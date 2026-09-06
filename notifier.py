@@ -724,29 +724,36 @@ def send_monthly_review(findings: list, performance: str) -> None:
     _send_email(subject, text, html)
 
 
-def _sector_net_activity(trades: list[dict]) -> list[tuple[str, int, int]]:
-    """Map trades to sectors; return (sector, buy_count, sell_count) sorted by net buys."""
+def _sector_net_activity(trades: list[dict]) -> list[tuple[str, float, float]]:
+    """
+    Map trades to sectors; return (sector, buy_dollars, sell_dollars) sorted by
+    net dollar flow. Amounts are disclosure-bracket midpoints (same basis as
+    conviction scoring) — not exact fill sizes.
+    """
     ticker_sector = sector_map({t["ticker"] for t in trades})
 
-    buys: dict[str, int] = {}
-    sells: dict[str, int] = {}
+    buys: dict[str, float] = {}
+    sells: dict[str, float] = {}
     for trade in trades:
         sector = ticker_sector.get(trade["ticker"].upper())
         if not sector:
             continue
+        dollars = parse_amount_value(trade.get("amount", ""))
+        if dollars <= 0:
+            continue
         if trade["type"] == "purchase":
-            buys[sector] = buys.get(sector, 0) + 1
+            buys[sector] = buys.get(sector, 0.0) + dollars
         else:
-            sells[sector] = sells.get(sector, 0) + 1
+            sells[sector] = sells.get(sector, 0.0) + dollars
 
     all_sectors = set(buys) | set(sells)
-    result = [(s, buys.get(s, 0), sells.get(s, 0)) for s in all_sectors]
+    result = [(s, buys.get(s, 0.0), sells.get(s, 0.0)) for s in all_sectors]
     result.sort(key=lambda x: x[1] - x[2], reverse=True)
     return result
 
 
 def generate_weekly_intelligence(
-    sector_activity: list[tuple[str, int, int]],
+    sector_activity: list[tuple[str, float, float]],
 ) -> str | None:
     """Weekly legislative + regulatory intelligence, grounded in real-time search."""
     top_accumulated = [s for s, b, sl in sector_activity if b > sl][:3]
@@ -754,9 +761,9 @@ def generate_weekly_intelligence(
 
     prompt = (
         f"Today is {datetime.now().strftime('%B %d, %Y')}. "
-        f"US congressional trading this week shows accumulation in: "
+        f"US congressional trading this week shows dollar-volume accumulation in: "
         f"{', '.join(top_accumulated) or 'mixed sectors'}. "
-        f"Distribution in: {', '.join(top_distributed) or 'none notable'}. "
+        f"Dollar-volume distribution in: {', '.join(top_distributed) or 'none notable'}. "
         f"In 3–4 bullet points, summarize what US legislation or regulatory actions "
         f"advanced this week that could explain or relate to this trading activity. "
         f"Name specific bills, agencies, and companies where possible. "
@@ -794,9 +801,17 @@ def send_summary(alerts: list[Alert], trades: list[dict], performance: str | Non
         "── Sector Activity ──",
     ]
     for sector, buys, sells in sector_activity:
-        net   = buys - sells
-        arrow = f"▲{net}" if net > 0 else (f"▼{abs(net)}" if net < 0 else "=")
-        text_lines.append(f"  {sector:<20} {buys} buys  {sells} sells  {arrow}")
+        net = buys - sells
+        if net > 0:
+            arrow = f"▲{_fmt_dollars(net)}"
+        elif net < 0:
+            arrow = f"▼{_fmt_dollars(abs(net))}"
+        else:
+            arrow = "="
+        text_lines.append(
+            f"  {sector:<20} {_fmt_dollars(buys)} buys  "
+            f"{_fmt_dollars(sells)} sells  {arrow}"
+        )
 
     text_lines += ["", "── Strongest Signals ──"]
     if alerts:
@@ -819,16 +834,22 @@ def send_summary(alerts: list[Alert], trades: list[dict], performance: str | Non
     for sector, buys, sells in sector_activity:
         net = buys - sells
         if net > 0:
-            net_html = f'<span style="color:#16a34a;font-weight:600;">▲ {net}</span>'
+            net_html = (
+                f'<span style="color:#16a34a;font-weight:600;">'
+                f'▲ {_fmt_dollars(net)}</span>'
+            )
         elif net < 0:
-            net_html = f'<span style="color:#dc2626;font-weight:600;">▼ {abs(net)}</span>'
+            net_html = (
+                f'<span style="color:#dc2626;font-weight:600;">'
+                f'▼ {_fmt_dollars(abs(net))}</span>'
+            )
         else:
             net_html = '<span style="color:#9ca3af;">—</span>'
         sector_rows += f"""
         <tr style="border-bottom:1px solid #f3f4f6;">
           <td style="padding:7px 12px;font-size:13px;">{sector}</td>
-          <td style="padding:7px 12px;font-size:13px;text-align:center;color:#16a34a;">{buys}</td>
-          <td style="padding:7px 12px;font-size:13px;text-align:center;color:#dc2626;">{sells}</td>
+          <td style="padding:7px 12px;font-size:13px;text-align:center;color:#16a34a;">{_fmt_dollars(buys)}</td>
+          <td style="padding:7px 12px;font-size:13px;text-align:center;color:#dc2626;">{_fmt_dollars(sells)}</td>
           <td style="padding:7px 12px;font-size:13px;text-align:center;">{net_html}</td>
         </tr>"""
 
@@ -890,9 +911,9 @@ def send_summary(alerts: list[Alert], trades: list[dict], performance: str | Non
         <thead>
           <tr style="background:#f3f4f6;text-align:left;">
             <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#374151;">Sector</th>
-            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#16a34a;text-align:center;">Buys</th>
-            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#dc2626;text-align:center;">Sells</th>
-            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#374151;text-align:center;">Net</th>
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#16a34a;text-align:center;">Buy $</th>
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#dc2626;text-align:center;">Sell $</th>
+            <th style="padding:7px 12px;font-size:12px;font-weight:600;color:#374151;text-align:center;">Net $</th>
           </tr>
         </thead>
         <tbody>{sector_rows}</tbody>

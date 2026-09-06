@@ -266,7 +266,7 @@ The Sunday digest is rebuilt from a sparse alert list into a four-section intell
 | Section | Source |
 |---------|--------|
 | Stats (Trades / Alerts / Sectors Active) | Deterministic |
-| **Sector Activity table** — buy count, sell count, net ▲▼ per sector | Deterministic from `config.SECTOR_TICKERS` |
+| **Sector Activity table** — buy $, sell $, net ▲▼ per sector (disclosure-bracket midpoints) | Deterministic from `config.SECTOR_TICKERS` |
 | **Strongest Signals** — top 5 alerts with color-coded tier badges | From `alerts` list |
 | **Legislative Intelligence** — 3–4 grounded bullet points on bills/regulatory actions that advanced this week and their sector implications | `generate_weekly_intelligence()` → Gemini + Google Search |
 

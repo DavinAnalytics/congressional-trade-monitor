@@ -1745,3 +1745,41 @@ def test_the_tech_consumer_subcommittee_still_flags_tech(monkeypatch):
 
     conflicts = committees.flag_conflicts("Some Senator", "PLTR")
     assert any("Consumer Protection, Technology, and Data Privacy" in c for c in conflicts)
+
+
+# ── Weekly digest sector activity (dollar volume) ─────────────────────────────
+
+def test_sector_activity_sums_disclosure_midpoints_not_trade_counts(monkeypatch):
+    """Weekly digest ranks sectors by disclosed $ midpoints, not trade count.
+    One large Defense buy must outrank many tiny Tech buys."""
+    monkeypatch.setattr(notifier, "sector_map", lambda tickers: {
+        "LMT": "Defense", "AAPL": "Tech", "MSFT": "Tech",
+    })
+    rows = notifier._sector_net_activity([
+        trade(ticker="LMT",  type="purchase", amount="$500,001 - $1,000,000"),
+        trade(ticker="AAPL", type="purchase", amount="$1,001 - $15,000"),
+        trade(ticker="MSFT", type="purchase", amount="$1,001 - $15,000"),
+        trade(ticker="AAPL", type="sale",     amount="$1,001 - $15,000"),
+    ])
+    by_sector = {s: (b, sl) for s, b, sl in rows}
+    assert by_sector["Defense"][0] == pytest.approx(750_000.5)
+    assert by_sector["Tech"][0] == pytest.approx(8_000.5 * 2)
+    assert by_sector["Tech"][1] == pytest.approx(8_000.5)
+    # Defense nets ~$750K; Tech nets ~$8K — Defense ranks first.
+    assert rows[0][0] == "Defense"
+
+
+def test_sector_activity_skips_unparseable_and_unmapped_amounts(monkeypatch):
+    monkeypatch.setattr(notifier, "sector_map", lambda tickers: {"NVDA": "Semiconductors"})
+    rows = notifier._sector_net_activity([
+        trade(ticker="NVDA", amount="None"),
+        trade(ticker="ZZZZ", amount="$50,001 - $100,000"),  # no sector
+        trade(ticker="NVDA", type="sale_partial", amount="$15,001 - $50,000"),
+    ])
+    assert rows == [("Semiconductors", 0.0, 32_500.5)]
+
+
+def test_fmt_dollars_used_in_digest_is_compact():
+    assert notifier._fmt_dollars(750_000) == "~$750K"
+    assert notifier._fmt_dollars(1_250_000) == "~$1.2M"
+    assert notifier._fmt_dollars(500) == "~$500"
