@@ -199,6 +199,15 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--raised)}
 td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
 .flag td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+tr.flag{cursor:pointer}
+.overlap-detail td{
+  background:var(--raised);padding:12px 16px 14px 20px;font-size:13px;color:var(--ink-2);
+}
+.overlap-detail p{margin:0 0 8px;font-size:12.5px;color:var(--muted)}
+.overlap-detail ul{margin:0;padding-left:18px}
+.overlap-detail li{margin:4px 0}
+.overlap-detail .out{color:var(--warn);font-size:11.5px;font-family:var(--mono)}
+.overlap-detail .in{color:var(--buy);font-size:11.5px;font-family:var(--mono)}
 .empty{padding:34px 16px;text-align:center;color:var(--faint);font-size:13.5px}
 
 /* ── Charts ── */
@@ -324,8 +333,11 @@ footer{border-top:1px solid var(--line);padding:20px 0 40px;font-size:12px;color
 
   <section class="panel" id="p-insider" role="tabpanel" hidden>
     <p class="note">Open-market purchases by Section 16 insiders. Rows marked with an
-      accent bar are tickers Congress also bought in the same window — the overlap
-      that produces a cross-signal.</p>
+      accent bar are tickers Congress also bought in the 180-day log — click a
+      marked row to see who. That is not the same as a live cross-signal: Signals
+      only fire when a congressional buy and an insider buy land within
+      <span class="num" id="ins-window"></span> days of each other (and the
+      congressional trade is not a rebalancing spray).</p>
     <div class="controls">
       <input type="search" id="q-ins" placeholder="Search insider, company or ticker" aria-label="Search insider buys">
       <label><input type="checkbox" id="f-overlap"> Overlapping only</label>
@@ -842,11 +854,39 @@ sortable("#t-board", [
   <td style="color:var(--muted);font-size:12px">${r.committees.map(esc).join(" · ")||"—"}</td></tr>`)();
 
 /* ── Insider ── */
+$("#ins-window").textContent = DATA.cluster_days || 45;
 function insRows(){
   const q = $("#q-ins").value.trim().toLowerCase(), only = $("#f-overlap").checked;
   return DATA.insider.filter(t => (!only || t.also_congress) &&
     (!q || t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q)
         || (t.company||"").toLowerCase().includes(q)));
+}
+const expandedIns = new Set();
+function insKey(t){ return t.date+"|"+t.name+"|"+t.ticker; }
+function daysApart(a, b){
+  const ms = Date.parse(a) - Date.parse(b);
+  return Number.isFinite(ms) ? Math.round(ms/864e5) : null;
+}
+function overlapDetail(t){
+  const rows = t.congress_overlap || [];
+  if(!rows.length) return `<p>No congressional purchases of ${esc(t.ticker)} in the log.</p>`;
+  const win = DATA.cluster_days || 45;
+  const items = rows.map(c=>{
+    const d = daysApart(t.date, c.date);
+    const abs = d==null ? null : Math.abs(d);
+    const inWin = abs!=null && abs<=win;
+    const when = d==null ? ""
+      : inWin
+        ? `<span class="in">${abs}d from this insider buy — inside the ${win}-day cross-signal window</span>`
+        : `<span class="out">${abs}d from this insider buy — outside the ${win}-day window, so no cross-signal</span>`;
+    return `<li>${esc(c.member)}${c.owner?` <span style="color:var(--faint)">(${esc(c.owner)})</span>`:""}
+      · ${TYPE[c.type]||esc(c.type)} · <span class="n">${esc(c.date)}</span>
+      · ${approx(c.value)}${c.lag!=null?` · ${c.lag}d lag`:""}
+      ${c.link?` · <a href="${esc(c.link)}" rel="noopener">${esc(c.chamber)||"Filing"}</a>`:""}
+      ${when?`<div>${when}</div>`:""}</li>`;
+  }).join("");
+  return `<p>Congressional purchases of <b>${esc(t.ticker)}</b> in the 180-day log. Click the ticker for the dossier.</p>
+    <ul>${items}</ul>`;
 }
 const drawIns = sortable("#t-insider", [
   {k:"date",   t:"Date",    v:t=>t.date},
@@ -856,16 +896,33 @@ const drawIns = sortable("#t-insider", [
   {k:"value",  t:"Value",   v:t=>t.value},
   {k:"shares", t:"Shares",  v:t=>t.shares},
   {k:"sen",    t:"Seniority", v:t=>t.seniority||""},
-], insRows, t=>`<tr class="${t.also_congress?"flag":""}">
-  <td class="n">${esc(t.date)}</td><td>${esc(t.name)}</td>
+], insRows, t=>{
+  const key = insKey(t);
+  const open = expandedIns.has(key);
+  const row = `<tr class="${t.also_congress?"flag":""}" data-ins="${esc(key)}" ${
+    t.also_congress?`aria-expanded="${open}"`:""}>
+  <td class="n">${esc(t.date)}${t.also_congress?` <span style="color:var(--faint)">${open?"▾":"▸"}</span>`:""}</td>
+  <td>${esc(t.name)}</td>
   <td style="color:var(--muted)">${esc(t.title)}</td>
   <td class="n"><b>${tickLink(t.ticker)}</b></td>
   <td class="n">${money(t.value)}</td>
   <td class="n">${t.shares?t.shares.toLocaleString():"—"}</td>
-  <td class="n">${esc(t.seniority||"—")}</td></tr>`);
+  <td class="n">${esc(t.seniority||"—")}</td></tr>`;
+  return open && t.also_congress
+    ? row+`<tr class="overlap-detail"><td colspan="7">${overlapDetail(t)}</td></tr>`
+    : row;
+});
 function refreshIns(){ $("#i-count").textContent = drawIns()+" of "+DATA.insider.length; }
 $("#q-ins").addEventListener("input", refreshIns);
 $("#f-overlap").addEventListener("change", refreshIns);
+$("#t-insider").addEventListener("click", e=>{
+  if(e.target.closest("th") || e.target.closest("[data-dossier]") || e.target.closest("a")) return;
+  const tr = e.target.closest("tr.flag");
+  if(!tr) return;
+  const key = tr.dataset.ins;
+  if(expandedIns.has(key)) expandedIns.delete(key); else expandedIns.add(key);
+  refreshIns();
+});
 refreshIns();
 
 /* One card per ticker, not per trade: two insiders buying the same company on

@@ -1783,3 +1783,15 @@ def test_fmt_dollars_used_in_digest_is_compact():
     assert notifier._fmt_dollars(750_000) == "~$750K"
     assert notifier._fmt_dollars(1_250_000) == "~$1.2M"
     assert notifier._fmt_dollars(500) == "~$500"
+
+
+def test_congress_overlap_lists_purchases_not_sales():
+    trades = [
+        trade(ticker="AON", representative="Alan Armstrong",
+              type="purchase", transaction_date="2026-03-27"),
+        trade(ticker="AON", representative="Someone Else", type="sale"),
+        trade(ticker="WELL", representative="Other Member", type="purchase"),
+    ]
+    rows = export._congress_overlap("AON", trades)
+    assert [r["member"] for r in rows] == [committees.display_name("Alan Armstrong")]
+    assert rows[0]["date"] == "2026-03-27"

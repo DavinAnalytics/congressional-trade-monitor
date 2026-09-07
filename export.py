@@ -410,6 +410,15 @@ def _insider_row(t: dict) -> dict:
     }
 
 
+def _congress_overlap(ticker: str, trades: list[dict]) -> list[dict]:
+    """Congressional purchases of this ticker in the dashboard log."""
+    sym = ticker.upper()
+    return [
+        _trade_row(t) for t in trades
+        if t.get("ticker", "").upper() == sym and t.get("type") == "purchase"
+    ]
+
+
 def _leaderboard(win_rates: dict) -> list[dict]:
     rows = []
     for member, s in win_rates.items():
@@ -442,7 +451,6 @@ def collect(alerts: list, trades: list[dict], insider_trades: list[dict],
     signals = current_signals(recent, insider_trades, win_rates, alerts)
     ai_store = load_ai_context()
     alert_rows = _alert_payload(signals, ai_store)
-    congress_tickers = {t["ticker"].upper() for t in trades if t["type"] == "purchase"}
 
     cross = [
         {
@@ -488,10 +496,14 @@ def collect(alerts: list, trades: list[dict], insider_trades: list[dict],
         print(f"    charts {i}/{len(chart_tickers)}", end="\r")
     print(f"    charted {len(prices)} ticker(s)          ")
 
-    insider_payload = [
-        {**_insider_row(t), "also_congress": t["ticker"].upper() in congress_tickers}
-        for t in insider_trades
-    ]
+    insider_payload = []
+    for t in insider_trades:
+        overlap = _congress_overlap(t["ticker"], trades)
+        insider_payload.append({
+            **_insider_row(t),
+            "also_congress": bool(overlap),
+            "congress_overlap": overlap,
+        })
 
     dossiers = {}
     for tk in fund_tickers:
