@@ -31,6 +31,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Daily runs and Pages deploys do not count as repository activity, so GitHub
+  # would auto-disable this scheduled workflow after 60 idle days. Re-enabling
+  # via the API resets that timer without dummy commits.
+  keepalive:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          workflow="${GITHUB_WORKFLOW_REF%%@*}"
+          workflow="${workflow##*/}"
+          if [ -z "$workflow" ]; then
+            echo "Could not determine workflow file from GITHUB_WORKFLOW_REF" >&2
+            exit 1
+          fi
+          gh api --silent -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/enable"
+          echo "Re-enabled ${workflow} to reset GitHub's 60-day scheduled-workflow inactivity timer."
+
   monitor:
     runs-on: ubuntu-latest
     timeout-minutes: 30
